@@ -13,7 +13,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { db } from "../db/client.js";
 import { cases, caseParticipants, constitutionVersions } from "../db/schema.js";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 
 const CreateCaseBody = z.object({
   title: z.string().min(8).max(200),
@@ -140,8 +140,42 @@ export const caseRoutes: FastifyPluginAsync = async (app) => {
     return { case: found, participants };
   });
 
-  app.get("/cases", async (req) => {
+  // GET /cases — public listing by default. When ?mine=true is passed, auth
+  // is required and the listing instead returns every case (any visibility,
+  // any status) where the caller is a participant (claimant or respondent),
+  // for the authenticated user's own dashboard.
+  app.get("/cases", async (req, reply) => {
     const query = req.query as { status?: string; category?: string; mine?: string };
+
+    if (query.mine === "true") {
+      try {
+        await req.jwtVerify();
+      } catch {
+        return reply.code(401).send({ error: "Unauthorized" });
+      }
+      const { sub: userId } = req.user as { sub: string };
+
+      const myParticipations = await db
+        .select({ caseId: caseParticipants.caseId })
+        .from(caseParticipants)
+        .where(eq(caseParticipants.userId, userId));
+      const caseIds = myParticipations.map((p) => p.caseId);
+      if (caseIds.length === 0) return { cases: [] };
+
+      const conditions = [inArray(cases.id, caseIds)];
+      if (query.status) conditions.push(eq(cases.status, query.status as (typeof cases.status.enumValues)[number]));
+      if (query.category) conditions.push(eq(cases.category, query.category));
+
+      const results = await db
+        .select()
+        .from(cases)
+        .where(and(...conditions))
+        .orderBy(desc(cases.createdAt))
+        .limit(100);
+
+      return { cases: results };
+    }
+
     const conditions = [eq(cases.visibility, "public")];
     if (query.status) conditions.push(eq(cases.status, query.status as (typeof cases.status.enumValues)[number]));
     if (query.category) conditions.push(eq(cases.category, query.category));

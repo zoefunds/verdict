@@ -16,6 +16,13 @@ primary_region = "iad"
   source = "verdict_evidence_data"
   destination = "/data/evidence"
 
+# Two always-on processes in one app: the HTTP API, and the GenLayer
+# indexer loop. Both run continuously (auto_stop_machines = false) so the
+# indexer keeps polling even with no inbound HTTP traffic.
+[processes]
+  app = "node dist/index.js"
+  indexer = "node dist/indexer/run.js"
+
 [http_service]
   internal_port = 4000
   force_https = true
@@ -34,6 +41,12 @@ primary_region = "iad"
 [[vm]]
   size = "shared-cpu-1x"
   memory = "512mb"
+  processes = ["app"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+  processes = ["indexer"]
 
 # Secrets (JWT_SECRET, DATABASE_URL, SESSION_REFRESH_SECRET, etc.) must be
 # set via `flyctl secrets set KEY=value` — never committed here.
