@@ -77,17 +77,69 @@ memory system) so it travels with the repo.
 - [x] Discovery questionnaire completed and answered.
 - [x] Architecture proposal presented and approved.
 - [x] Step 1: Project initialization (this scaffold).
-- [ ] Step 2: Database schema design.
-- [ ] Step 3: GenLayer contract design (requires live docs research).
-- [ ] Step 4: Backend implementation.
-- [ ] Step 5: Frontend implementation.
-- [ ] Step 6: GenLayer integration.
-- [ ] Step 7: Evidence system.
-- [ ] Step 8: Case lifecycle + escrow.
-- [ ] Step 9: Appeals.
-- [ ] Step 10: Casebook.
-- [ ] Step 11: Constitution governance.
-- [ ] Step 12: Testing.
-- [ ] Step 13: Security review.
-- [ ] Step 14: Deployment (Vercel + Fly.io + StudioNet).
-- [ ] Step 15: Post-deployment integration verification.
+- [x] Step 2: Database schema design (Postgres/Drizzle, 18 tables).
+- [x] Step 3: GenLayer contract design + write (1600+ lines, deployed).
+- [x] Step 4: Backend implementation (Fastify: auth, cases, evidence,
+      casebook, constitutions, GenLayer read-proxy).
+- [x] Step 5: Frontend implementation (Next.js, all required pages, DESIGN.md
+      tokens, `next build` verified clean).
+- [x] Step 6: GenLayer integration — real `genlayer-js` client (not a stub)
+      wired to the deployed contract, verified with a live read
+      (`get_protocol_config`) returning real on-chain data.
+- [x] Step 7: Evidence system (submission routes + SHA-256 hashing + backend
+      storage; on-chain `submit_evidence` write path wired).
+- [x] Step 8: Case lifecycle + escrow (contract-side; indexer polls and
+      mirrors status into Postgres).
+- [x] Step 9: Appeals (contract-side `file_appeal`/`resolve_appeal`; frontend
+      appeal flow page).
+- [x] Step 10: Casebook (public route + frontend pages).
+- [x] Step 11: Constitution governance (protocol-governance MVP; versioned
+      articles, amendment proposal method on contract).
+- [ ] Step 12: Testing — not yet started (unit/integration/contract test
+      suites still to be written).
+- [x] Step 13: Security review — initial pass in docs/SECURITY.md; needs
+      revisiting once real traffic/load exists, and before handling
+      non-testnet value.
+- [ ] Step 14: Deployment (Vercel + Fly.io) — contract is deployed to
+      StudioNet; frontend/backend not yet deployed to Vercel/Fly (still
+      running locally for development/verification).
+- [ ] Step 15: Post-deployment integration verification — partially done
+      (live contract read confirmed working end-to-end locally); full
+      verification pending actual Vercel + Fly.io deployment.
+
+## Deployed contract
+
+- **Address (StudioNet):** `0x56118ae3ee66b662a9a4CEf3424008c1D1036DbD`
+- **Constructor args used:** treasury_address = deployer's own account
+  (`0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb`), 3 genesis core articles,
+  min_stake_wei = 0.
+- Verified live via a direct `genlayer-js` `readContract` call to
+  `get_protocol_config` — returned real on-chain state (appeal_bond_bps:
+  2000, current_constitution_version: 1, paused: false).
+
+## Rate limiting (GenLayer StudioNet 30 req/min cap)
+
+- Upstash Redis coordinates a shared budget (capped conservatively at 25/min)
+  across the backend API process, the indexer process, and every frontend
+  tab — see `backend/src/lib/rate-limiter.ts`.
+- Frontend reads never call the GenLayer RPC directly; they go through
+  `backend/src/routes/genlayer.ts` (`/genlayer/*`) so the shared budget is
+  actually shared. Only wallet-signed writes go direct from the browser
+  (those aren't RPC-budget reads, they're user transactions).
+- `REDIS_URL` is a credential — it lives only in `backend/.env` (gitignored)
+  and must be set as a Fly.io secret in production, never committed.
+
+## Infra notes specific to this dev machine
+
+- Native Homebrew Postgres already occupies `localhost:5432`; a separate
+  project's Docker Postgres already occupies `55432`. VERDICT's local
+  Postgres container maps to host port **55433** instead
+  (`docker-compose.yml`, `.env.example`).
+- Dropped `@reown/appkit` / `@reown/appkit-adapter-wagmi` (Reown's full
+  modal SDK) after its dependency tree (941 packages, pulling in unrelated
+  Coinbase Smart Wallet / Safe Gateway bundles) proved unable to build
+  reliably. Replaced with plain `wagmi` + `@wagmi/connectors`
+  (`injected()` for MetaMask, `walletConnect()` for Rainbow/Zerion/others,
+  same Reown Project ID). Frontend `next build` passes clean with this.
+- Production frontend URL: **https://ver-dict.vercel.app** — backend
+  `CORS_ORIGIN` (`backend/fly.toml`) is locked to this origin.
