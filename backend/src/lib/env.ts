@@ -14,6 +14,7 @@ const EnvSchema = z.object({
   GENLAYER_CHAIN_ID: z.string().optional(),
   VERDICT_CONTRACT_ADDRESS: z.string().optional(),
   GENLAYER_INDEXER_START_BLOCK: z.coerce.number().default(0),
+  REDIS_URL: z.string().optional(),
   CORS_ORIGIN: z.string().default("http://localhost:3000"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });

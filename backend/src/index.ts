@@ -9,6 +9,7 @@ import { authRoutes } from "./routes/auth.js";
 import { caseRoutes } from "./routes/cases.js";
 import { evidenceRoutes } from "./routes/evidence.js";
 import { casebookRoutes } from "./routes/casebook.js";
+import { genlayerRoutes } from "./routes/genlayer.js";
 import { constitutionRoutes } from "./routes/constitutions.js";
 
 declare module "fastify" {
@@ -66,6 +67,7 @@ async function buildServer() {
   await app.register(caseRoutes);
   await app.register(evidenceRoutes);
   await app.register(casebookRoutes);
+  await app.register(genlayerRoutes);
   await app.register(constitutionRoutes);
 
   return app;

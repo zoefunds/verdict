@@ -2,6 +2,8 @@
 
 ## Frontend -> Vercel
 
+Production URL: **https://ver-dict.vercel.app**
+
 ```bash
 cd frontend
 vercel link
@@ -13,7 +15,11 @@ vercel --prod
 ```
 
 Preview deployments happen automatically on every push once the Vercel
-project is linked to the GitHub repo (github.com/zoefunds/verdict).
+project is linked to the GitHub repo (github.com/zoefunds/verdict). Make sure
+the Vercel project's production domain is set to `ver-dict.vercel.app` (or an
+alias to it) — the backend's `CORS_ORIGIN` (`backend/fly.toml`) is locked to
+`https://ver-dict.vercel.app`, so requests from any other origin will be
+rejected by CORS until that's updated too.
 
 ## Backend -> Fly.io
 

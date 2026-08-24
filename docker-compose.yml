@@ -8,7 +8,12 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_local_dev_only}
       POSTGRES_DB: ${POSTGRES_DB:-verdict}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Host port defaults to 55433, not 5432 — this dev machine already has
+      # a native Homebrew Postgres on localhost:5432 (connections there
+      # silently landed on that instance instead of this container) and a
+      # separate project's Docker Postgres already on 55432. Override
+      # POSTGRES_PORT in .env if 55433 also conflicts locally.
+      - "${POSTGRES_PORT:-55433}:5432"
     volumes:
       - verdict_pgdata:/var/lib/postgresql/data
     healthcheck:

@@ -13,6 +13,7 @@
 # and partial verdicts split proportionally. Either party may appeal once.
 #
 # Deploy target: GenLayer Studio / StudioNet. Fee token: GEN.
+# Deployed StudioNet address: 0x56118ae3ee66b662a9a4CEf3424008c1D1036DbD
 #
 # ============================================================================
 #  TABLE OF CONTENTS

@@ -10,9 +10,20 @@ node_modules/
 !.env.example
 
 # Next.js
+.next/
 frontend/.next/
 frontend/out/
 frontend/build/
+
+# Stray root-level installs (dependencies belong in frontend/ or backend/,
+# never at the repo root — these appear if a command is accidentally run
+# from the repo root instead of a subproject directory)
+/node_modules/
+/package.json
+/package-lock.json
+
+# Local harness/session state (not part of the project)
+.claude/
 
 # Backend
 backend/dist/

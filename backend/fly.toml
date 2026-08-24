@@ -10,7 +10,7 @@ primary_region = "iad"
 [env]
   NODE_ENV = "production"
   BACKEND_PORT = "4000"
-  CORS_ORIGIN = "https://verdict.vercel.app"
+  CORS_ORIGIN = "https://ver-dict.vercel.app"
 
 [[mounts]]
   source = "verdict_evidence_data"

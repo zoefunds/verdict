@@ -1,5 +1,6 @@
 /**
- * Minimal GenLayer StudioNet read client for the indexer.
+ * GenLayer StudioNet read client, backing both the indexer and the
+ * frontend's /genlayer/* read proxy.
  *
  * GenLayer's execution model is not identical to a Solidity EVM chain —
  * this contract does not emit Solidity-style event logs; instead it records
@@ -8,55 +9,62 @@
  * That means the reliable sync strategy here is POLLING the contract's view
  * methods on an interval, not subscribing to `eth_getLogs`-style filters.
  *
- * This client wraps the GenLayer JSON-RPC `gen_call` (view-call) endpoint.
- * Exact method/param names should be reconfirmed against the GenLayer JS SDK
- * / docs.genlayer.com for your installed SDK version before relying on this
- * in production — this file intentionally isolates that surface to one
- * place so it's a single, small area to patch if the RPC shape differs.
+ * Uses the official `genlayer-js` SDK's `readContract` rather than hand-
+ * rolled JSON-RPC — an earlier version of this file guessed at the raw
+ * wire format (a `gen_call` method) and it was wrong (StudioNet rejected it
+ * with a KeyError-shaped error). The SDK is the source of truth for the
+ * actual RPC shape, confirmed against a live read against the deployed
+ * VERDICT contract (0x56118ae3ee66b662a9a4CEf3424008c1D1036DbD) during
+ * development.
  */
 
+import { createClient } from "genlayer-js";
+import { studionet } from "genlayer-js/chains";
 import { env } from "./env.js";
+import { acquireGenlayerRpcSlot } from "./rate-limiter.js";
 
 export class GenLayerClientError extends Error {}
 
-async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
-  if (!env.GENLAYER_RPC_URL) {
-    throw new GenLayerClientError("GENLAYER_RPC_URL is not configured");
-  }
-  const res = await fetch(env.GENLAYER_RPC_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  if (!res.ok) {
-    throw new GenLayerClientError(`GenLayer RPC HTTP ${res.status}`);
-  }
-  const body = (await res.json()) as { result?: T; error?: { message: string } };
-  if (body.error) {
-    throw new GenLayerClientError(`GenLayer RPC error: ${body.error.message}`);
-  }
-  if (body.result === undefined) {
-    throw new GenLayerClientError("GenLayer RPC returned no result");
-  }
-  return body.result;
-}
-
-function contractAddressOrThrow(): string {
+function contractAddressOrThrow(): `0x${string}` {
   const addr = env.VERDICT_CONTRACT_ADDRESS;
   if (!addr || addr.startsWith("changeme")) {
     throw new GenLayerClientError("VERDICT_CONTRACT_ADDRESS is not configured — contract not yet deployed");
   }
-  return addr;
+  return addr as `0x${string}`;
+}
+
+let cachedClient: ReturnType<typeof createClient> | null = null;
+
+/**
+ * The backend's read client has no signer/account — it never sends
+ * transactions, only reads. genlayer-js's readContract does not require an
+ * account for view calls (see docs.genlayer.com/api-references/genlayer-js).
+ */
+function getReadClient() {
+  if (!cachedClient) {
+    cachedClient = createClient({ chain: studionet });
+  }
+  return cachedClient;
 }
 
 /** Calls a @gl.public.view method on the deployed VERDICT contract. */
 export async function viewCall<T>(method: string, args: unknown[] = []): Promise<T> {
   const address = contractAddressOrThrow();
-  // NOTE: param shape (`gen_call` vs `eth_call`-style calldata encoding) is
-  // SDK-version-dependent. This uses a plausible JSON-RPC shape; validate
-  // against the installed GenLayer SDK's documented low-level call method
-  // before depending on this in production, and adjust here only.
-  return rpcCall<T>("gen_call", [{ to: address, function: method, args }]);
+  await acquireGenlayerRpcSlot();
+  const client = getReadClient();
+  try {
+    // NOTE: the installed genlayer-js version's readContract() type does not
+    // accept a `stateStatus` param (unlike some documented examples) — omit
+    // it; the SDK defaults to the accepted/finalized state for reads.
+    const result = await client.readContract({
+      address,
+      functionName: method,
+      args: args as Parameters<typeof client.readContract>[0]["args"],
+    });
+    return result as T;
+  } catch (err) {
+    throw new GenLayerClientError(`GenLayer readContract("${method}") failed: ${(err as Error).message}`);
+  }
 }
 
 export async function getCaseCount(): Promise<number> {
