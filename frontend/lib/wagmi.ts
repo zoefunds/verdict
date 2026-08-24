@@ -1,7 +1,14 @@
 import { createConfig, http } from "wagmi";
-import { mainnet, sepolia } from "wagmi/chains";
 import { injected, walletConnect } from "wagmi/connectors";
+import { studionet } from "genlayer-js/chains";
 import { env } from "./env";
+
+// GenLayer StudioNet is the only network VERDICT targets — every case,
+// stake, and settlement lives on the deployed contract there. Wallets are
+// prompted to switch to (or add) this network on connect; there is no
+// mainnet/testnet-Ethereum fallback because a VERDICT wallet transaction
+// signed against any other chain would silently fail against the contract.
+export const genlayerStudionet = studionet;
 
 export const reownProjectId = env.reownProjectId;
 
@@ -29,11 +36,10 @@ const connectors = [
 ];
 
 export const wagmiConfig = createConfig({
-  chains: [mainnet, sepolia],
+  chains: [genlayerStudionet],
   connectors,
   transports: {
-    [mainnet.id]: http(),
-    [sepolia.id]: http(),
+    [genlayerStudionet.id]: http(genlayerStudionet.rpcUrls.default.http[0]),
   },
   ssr: true,
 });

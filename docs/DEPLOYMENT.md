@@ -12,14 +12,36 @@ vercel env add NEXT_PUBLIC_REOWN_PROJECT_ID production
 vercel env add NEXT_PUBLIC_GENLAYER_RPC_URL production
 vercel env add NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS production
 vercel --prod
+vercel alias set <the-new-deployment-url-printed-above> ver-dict.vercel.app
 ```
 
+`vercel --prod` publishes a new unique `verdict-<hash>-....vercel.app` URL
+each time — it does NOT automatically move the `ver-dict.vercel.app` alias
+to point at it. Re-run the `vercel alias set` command above after every
+production deploy (with that deploy's printed URL) to keep
+`ver-dict.vercel.app` current. Attaching `ver-dict.vercel.app` as this
+Vercel project's actual primary domain (Project Settings -> Domains, in the
+dashboard) would make this automatic, but wasn't set up that way here — the
+CLI has no subcommand for assigning a `*.vercel.app` subdomain as a
+project's primary domain, only for domains you own via external DNS.
+
 Preview deployments happen automatically on every push once the Vercel
-project is linked to the GitHub repo (github.com/zoefunds/verdict). Make sure
-the Vercel project's production domain is set to `ver-dict.vercel.app` (or an
-alias to it) — the backend's `CORS_ORIGIN` (`backend/fly.toml`) is locked to
-`https://ver-dict.vercel.app`, so requests from any other origin will be
-rejected by CORS until that's updated too.
+project is linked to the GitHub repo (github.com/zoefunds/verdict). The
+backend's `CORS_ORIGIN` (`backend/fly.toml`) is locked to
+`https://ver-dict.vercel.app`, so requests from any other origin (including
+an un-aliased fresh deploy URL) will be rejected by CORS.
+
+Also note: a freshly linked Vercel project can mis-detect the framework
+(this happened once during setup, when the project was accidentally linked
+from `backend/` first and got tagged "Fastify") — `frontend/vercel.json`
+pins `"framework": "nextjs"` explicitly to prevent that regressing.
+
+If the deployment is unexpectedly returning a 302 to
+`vercel.com/sso-api?...` instead of the app, deployment protection got
+re-enabled — disable it with:
+```bash
+vercel project protection disable verdict --sso --scope <your-scope>
+```
 
 ## Backend -> Fly.io
 
