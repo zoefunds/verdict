@@ -100,12 +100,40 @@ memory system) so it travels with the repo.
 - [x] Step 13: Security review — initial pass in docs/SECURITY.md; needs
       revisiting once real traffic/load exists, and before handling
       non-testnet value.
-- [ ] Step 14: Deployment (Vercel + Fly.io) — contract is deployed to
-      StudioNet; frontend/backend not yet deployed to Vercel/Fly (still
-      running locally for development/verification).
-- [ ] Step 15: Post-deployment integration verification — partially done
-      (live contract read confirmed working end-to-end locally); full
-      verification pending actual Vercel + Fly.io deployment.
+- [x] Step 14: Deployment (Vercel + Fly.io) — all three legs live:
+      - Contract: StudioNet, see below.
+      - Backend: Fly.io app `verdict-backend`, region `iad`, two always-on
+        processes (`app` + `indexer`, plus one standby indexer machine),
+        Fly Postgres (`verdict-postgres`) attached, persistent evidence
+        volume (`verdict_evidence_data`, 3GB) mounted.
+      - Frontend: Vercel project `verdict` (scope
+        `adebiyi2002gmailcoms-projects`), aliased to
+        **https://ver-dict.vercel.app**.
+- [x] Step 15: Post-deployment integration verification — confirmed live in
+      production: `curl https://verdict-backend.fly.dev/health/ready` ->
+      `{"status":"ready"}`; `/genlayer/protocol-config` returns real
+      on-chain state through the deployed backend; `ver-dict.vercel.app`
+      renders the landing page and reaches the backend with correct CORS
+      headers (`access-control-allow-origin` scoped to that exact origin).
+
+## Live URLs
+
+- **Frontend:** https://ver-dict.vercel.app
+- **Backend:** https://verdict-backend.fly.dev
+- **Contract:** StudioNet, see below.
+
+## Fly.io / Vercel accounts
+
+- Fly.io: `priscillageorge83@gmail.com` (switched from the original
+  `zoephotography2020@gmail.com` account, which had a billing issue).
+- Vercel: scope `adebiyi2002gmailcoms-projects`. The `verdict` Vercel
+  project initially had deployment SSO protection enabled by default
+  (blocking public access with a 302 to `vercel.com/sso-api`) — disabled via
+  `vercel project protection disable verdict --sso`.
+- `frontend/vercel.json` pins `"framework": "nextjs"` explicitly — without
+  it, Vercel mis-detected the project as a Fastify app (residual from an
+  accidental first `vercel link` run from `backend/` before the cwd issue
+  was caught) and deploys failed with "No entrypoint found".
 
 ## Deployed contract
 
