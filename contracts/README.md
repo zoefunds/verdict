@@ -1,0 +1,214 @@
+# VERDICT — Intelligent Contract
+
+`verdict_contract.py` is a collateralized, evidence-based dispute resolution
+protocol built as a GenLayer Intelligent Contract. It is **not** a betting or
+prediction-market contract: a claimant and a respondent who already disagree
+about a real-world fact each lock GEN collateral behind their own account of
+events, submit evidence, and the contract's LLM-backed non-deterministic
+logic — reaching consensus via GenLayer's Optimistic Democracy — investigates
+that evidence against a versioned "constitution" and renders a verdict. The
+loser's stake moves to a protocol treasury, the winner reclaims their own
+stake, and partial verdicts split proportionally. Either party may appeal
+once, within a 7-day window, by posting an appeal bond; the second verdict is
+final.
+
+## Contents
+
+- [Section-by-section overview](#section-by-section-overview)
+- [Deployment to StudioNet](#deployment-to-studionet)
+- [Verifying deployment](#verifying-deployment)
+- [Interacting with the deployed contract](#interacting-with-the-deployed-contract)
+
+---
+
+## Section-by-section overview
+
+The contract (`class Verdict(gl.Contract)`) is organized into the sections
+below, matching the in-file table of contents comment at the top of
+`verdict_contract.py`.
+
+### 1–4. Constants, storage dataclasses, escrow primitives, helpers
+- Lifecycle status constants for the full case state machine: `DRAFT → OPEN
+  → AWAITING_RESPONDENT_STAKE → FUNDED → EVIDENCE_WINDOW →
+  UNDER_INVESTIGATION → VERDICT_RENDERED → APPEAL_WINDOW → [APPEALED →
+  RE_INVESTIGATION → FINAL] | FINAL → SETTLED`, plus `CANCELLED` and
+  `ABANDONED_REFUNDED` terminal states for early-exit / recovery paths.
+- `Case`, `ConstitutionVersion`, `CaseRule`, `Evidence`, `CaseEvent` — the
+  `@allow_storage @dataclass` storage schema. Money fields are `u256`.
+- `_send_gen` — the single GEN emission chokepoint. Every payout anywhere in
+  the contract routes through this one function, defined once via
+  `gl.evm.contract_interface`.
+- Deterministic helpers: JSON-extraction/coercion utilities for LLM output,
+  address normalization, validation (`_require`), truncation.
+
+### 5.1–5.3 Storage schema, constructor, internal utilities
+Deploy-time arguments: `treasury_address`, `initial_core_articles` (the
+genesis constitution's immutable core, e.g. "verdicts must be grounded only
+in submitted or independently-verified evidence, never in stake size"), and
+an optional `min_stake_wei` floor.
+
+### 5.4 Constitution / governance
+`propose_constitution_amendment` (owner-gated) publishes a brand-new,
+immutable constitution version — it never edits a prior version's text, and
+each case freezes the constitution version active at its own creation time,
+so amendments are **never retroactive**. `add_case_rule` lets a case's
+claimant layer case-specific rules on top of the immutable core articles,
+frozen the moment the evidence window opens.
+
+### 5.5 Case lifecycle
+`create_case` (payable) — claimant opens a case and locks their stake;
+`gl.message.value` must exactly equal `required_stake_wei`. `fund_respondent_stake`
+(payable) — respondent locks matching collateral, opening the evidence
+window. `cancel_case` — pre-commitment refund exit for the claimant only,
+before the respondent has funded.
+
+### 5.6 Evidence submission
+`submit_evidence` — either party submits a URL / text statement / tx record /
+document hash. All of it is stored as **untrusted, participant-authored
+data** and is never treated as instructions to the verdict LLM (see the
+explicit untrusted-data wrapping in `_build_verdict_prompt`, and the
+prompt-injection defense described in the docstrings).
+
+### 5.7 Non-deterministic verdict evaluation
+The contract's entire nondeterministic surface area is two `@gl.public.write`
+entrypoints: `render_verdict` and `resolve_appeal`, both routing through
+`_run_verdict_judgment`. For every `URL`-kind evidence item, the leader *and*
+every validator independently re-fetch the live page at verdict time via
+`gl.nondet.web.render` — never trusting a cached snapshot from submission
+time, so post-submission tampering is detectable. The LLM is asked to return
+a small **structured** decision object — `outcome` enum (`CLAIMANT` /
+`RESPONDENT` / `PARTIAL` / `INCONCLUSIVE`), `claimant_share_bps`,
+`confidence_bps`, and a short `reasoning_summary` — and validator consensus
+(`_verdicts_agree`) compares only the structured, economically-meaningful
+fields with an explicit tolerance band, never exact-string equality on
+prose. See the main report to the user for why this avoids `UNDETERMINED`
+consensus / leader rotation.
+
+### 5.8 Settlement
+`settle_case` executes payout once a case reaches `FINAL`. Outcome →
+payout mapping: `CLAIMANT`/`RESPONDENT` → full pot to the winner;
+`PARTIAL` → proportional split by `verdict_split_bps`; `INCONCLUSIVE` → both
+parties refunded their own stake. An optional protocol fee
+(`protocol_fee_bps`, 0 by default, capped at 10%) is skimmed only from the
+losing side's forfeited collateral, never from a winner's own reclaimed
+stake.
+
+### 5.9 Appeals
+`file_appeal` (payable) — either party, once, within the fixed 7-day
+`APPEAL_WINDOW`, posts an appeal bond (`appeal_bond_bps` of the total case
+stake, exact-match enforced) and a required new-evidence note.
+`open_appeal_evidence_window` briefly reopens evidence submission.
+`resolve_appeal` triggers the second, final, independent re-evaluation; the
+appeal bond is returned to the appellant if the appeal improved their
+position, otherwise it is forfeited to treasury. No further appeals are
+possible after this.
+
+### 5.10 Abandonment / timeout recovery
+`claim_case_abandonment` — covers every lifecycle stage where a counterparty
+could go silent (respondent never funds; evidence window closes but nobody
+requests investigation or renders a verdict; an appeal is filed but never
+carried through to resolution). Each check is `deadline + a grace period`
+and only ever releases the caller's **own** deposited funds — this is the
+"never permanently stuck" guarantee. `sweep_treasury` (owner-gated) pulls
+any residual accrued treasury balance.
+
+### 5.11 Views
+`get_case`, `get_case_count`, `get_case_evidence_ids`, `get_evidence`,
+`get_case_rules`, `get_constitution` (by version), `get_current_constitution_version`,
+`get_case_events` (append-only per-case activity log), `get_protocol_config`,
+`get_metrics`.
+
+---
+
+## Deployment to StudioNet
+
+GenLayer Studio / StudioNet is the hosted development network, fee token
+**GEN**. Deployment is **your** responsibility — this repository never
+invents or hard-codes a contract address; you obtain it from the deployment
+result and must supply it to any client/frontend yourself.
+
+### 1. Prerequisites
+
+- Node.js and the GenLayer CLI:
+  ```bash
+  npm install -g genlayer
+  ```
+- A GenLayer Studio / StudioNet account funded with test GEN. Fund it via
+  the faucet button (💧) in the Studio account selector, or the standalone
+  faucet at `https://testnet-faucet.genlayer.foundation` if you are pointed
+  at the Bradbury testnet instead of StudioNet.
+
+### 2. Initialize / configure the project
+
+If you don't already have a GenLayer CLI project scaffolded:
+
+```bash
+genlayer init
+```
+
+Point your network configuration at StudioNet (check `genlayer config` /
+your project's network config file for the exact key names in your installed
+CLI version — these have changed across CLI releases, so confirm against
+`genlayer --help` / `genlayer config --help` for your installed version):
+
+- RPC endpoint: `https://studio.genlayer.com/api`
+- Chain ID: `61999`
+
+### 3. Deploy
+
+```bash
+genlayer deploy --contract contracts/verdict_contract.py --args \
+  "<TREASURY_ADDRESS_HEX>" \
+  '["Verdicts must be grounded only in submitted or independently-verified evidence, never in the relative size of either party'\''s stake.", "Every party has the right to submit evidence and to one appeal.", "A verdict must never be influenced by which party submitted more or longer evidence."]' \
+  0
+```
+
+Positional constructor args, in order:
+1. `treasury_address` (str) — hex address to receive losing stakes / fees.
+2. `initial_core_articles` (list[str]) — the genesis constitution's
+   immutable core articles, as a JSON array.
+3. `min_stake_wei` (int) — protocol-wide minimum required stake, in wei
+   (0 disables the floor).
+
+Confirm the exact `genlayer deploy` flag names and calldata-encoding
+convention against your installed CLI's `--help` output before running this
+— the CLI's argument-passing syntax has changed between releases and the
+example above is illustrative of the argument **order and types**, not
+necessarily the exact current flag spelling.
+
+### 4. Fund your account
+
+Make sure the deploying/calling account has enough test GEN to cover gas and
+any stakes you intend to test with. Use the Studio faucet button or the
+testnet faucet URL above.
+
+## Verifying deployment succeeded
+
+1. The `genlayer deploy` command's output includes a transaction hash and,
+   once the transaction finalizes, a deployed **contract address**. Wait for
+   the transaction status to reach a finalized/accepted state (GenLayer
+   Studio's UI shows this in the transaction inspector).
+2. Call a view method against the deployed address to confirm the bytecode
+   is live and schema-readable, e.g.:
+   ```bash
+   genlayer call <CONTRACT_ADDRESS> get_protocol_config
+   ```
+   A successful call returning the JSON config object (owner, treasury
+   address, fee settings, current constitution version) confirms the
+   contract deployed correctly and did **not** produce a "could not load
+   contract schema" error.
+3. Also sanity-check `get_current_constitution_version` returns `1` and
+   `get_constitution` (with no argument, or `version=1`) returns the
+   articles you passed at deploy time.
+
+## Obtaining the contract address
+
+The contract address is emitted by the deployment transaction itself — it is
+**not** predictable or invented ahead of time. Obtain it from:
+- The `genlayer deploy` CLI output, or
+- The GenLayer Studio UI's transaction/contract inspector after the deploy
+  transaction finalizes.
+
+**You (the user) must supply this address** to any application, script, or
+documentation that references the deployed contract. Nothing in this
+repository hard-codes or guesses a contract address.

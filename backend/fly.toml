@@ -1,0 +1,39 @@
+# Fly.io configuration for the VERDICT backend.
+# "Backend must never die" -> min_machines_running = 1, auto_stop disabled,
+# aggressive health checks with automatic restart on failure.
+
+app = "verdict-backend"
+primary_region = "iad"
+
+[build]
+
+[env]
+  NODE_ENV = "production"
+  BACKEND_PORT = "4000"
+  CORS_ORIGIN = "https://verdict.vercel.app"
+
+[[mounts]]
+  source = "verdict_evidence_data"
+  destination = "/data/evidence"
+
+[http_service]
+  internal_port = 4000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "15s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+# Secrets (JWT_SECRET, DATABASE_URL, SESSION_REFRESH_SECRET, etc.) must be
+# set via `flyctl secrets set KEY=value` — never committed here.
