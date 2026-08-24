@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Env files (never commit secrets)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Next.js
+frontend/.next/
+frontend/out/
+frontend/build/
+
+# Backend
+backend/dist/
+backend/build/
+
+# Postgres data (Docker volume mounts if any land in-repo)
+pgdata/
+*.sqlite
+
+# Evidence storage volume (never commit user-uploaded evidence)
+backend/storage/uploads/
+storage/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Test/coverage
+coverage/
+.nyc_output/
+
+# GenLayer local artifacts
+contracts/__pycache__/
+contracts/*.pyc
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
