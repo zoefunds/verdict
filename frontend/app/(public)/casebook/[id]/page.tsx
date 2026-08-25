@@ -7,13 +7,15 @@ import { StatusBadge } from "@/components/case/StatusBadge";
 import { EscrowBar } from "@/components/case/EscrowBar";
 import { EvidenceTimeline } from "@/components/case/EvidenceTimeline";
 import { ConstitutionSidebar } from "@/components/case/ConstitutionSidebar";
-import { useCase, useCaseEvidence } from "@/hooks/useCases";
+import { VerdictCard } from "@/components/case/VerdictCard";
+import { useCase, useCaseEvidence, useContractCase } from "@/hooks/useCases";
 import { formatDateTime } from "@/lib/utils";
 
 export default function PublicCaseDetailsPage() {
   const params = useParams<{ id: string }>();
   const { data, isLoading, isError } = useCase(params.id);
   const { data: evidenceData } = useCaseEvidence(params.id);
+  const { data: onChainCase } = useContractCase(data?.case.contractCaseId);
 
   if (isLoading) return <div className="mx-auto max-w-5xl space-y-4 px-6 py-12"><Skeleton className="h-24 w-full" /><Skeleton className="h-64 w-full" /></div>;
   if (isError || !data) return <div className="mx-auto max-w-5xl px-6 py-12 text-error">This case is not public, or does not exist.</div>;
@@ -37,7 +39,9 @@ export default function PublicCaseDetailsPage() {
           </CardContent>
         </Card>
 
-        <EscrowBar stakeAmountWei={c.stakeAmountWei} participants={participants} />
+        <VerdictCard onChainCase={onChainCase as Record<string, unknown> | undefined} />
+
+        <EscrowBar stakeAmountWei={c.stakeAmountWei} participants={participants} respondentAddress={c.respondentAddress} />
 
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
           <Card>

@@ -1,6 +1,6 @@
 import { env } from "./env";
 import { useAuthStore } from "./auth-store";
-import type { Case, CaseParticipant, Evidence, User, ConstitutionVersion, ConstitutionArticle } from "@/types";
+import type { Case, CaseParticipant, Evidence, User, ConstitutionVersion, ConstitutionArticle, Notification } from "@/types";
 
 export class ApiError extends Error {
   status: number;
@@ -83,6 +83,8 @@ export const authApi = {
     }),
   logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
   me: () => request<{ user: User }>("/auth/me", { auth: true }),
+  updateMe: (payload: { displayName?: string; bio?: string }) =>
+    request<{ user: User }>("/auth/me", { method: "PATCH", body: payload, auth: true }),
 };
 
 // ---- Cases ----
@@ -147,6 +149,15 @@ export const casebookApi = {
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return request<{ cases: Case[] }>(`/casebook${suffix}`);
   },
+};
+
+// ---- Notifications ----
+export const notificationsApi = {
+  list: (unreadOnly = false) =>
+    request<{ notifications: Notification[] }>(`/notifications${unreadOnly ? "?unreadOnly=true" : ""}`, {
+      auth: true,
+    }),
+  markRead: (id: string) => request<{ notification: Notification }>(`/notifications/${id}/read`, { method: "PATCH", auth: true }),
 };
 
 // ---- Constitutions ----

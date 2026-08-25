@@ -86,4 +86,26 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     const [user] = await db.select().from(users).where(eq(users.id, sub)).limit(1);
     return { user };
   });
+
+  const UpdateMeBody = z.object({
+    displayName: z.string().trim().max(80).optional(),
+    bio: z.string().trim().max(500).optional(),
+  });
+
+  app.patch("/auth/me", { onRequest: [app.authenticate] }, async (req, reply) => {
+    const { sub } = req.user as { sub: string };
+    const body = UpdateMeBody.parse(req.body);
+
+    if (Object.keys(body).length === 0) {
+      return reply.code(400).send({ error: "No fields to update" });
+    }
+
+    const [updated] = await db
+      .update(users)
+      .set({ ...body, updatedAt: new Date() })
+      .where(eq(users.id, sub))
+      .returning();
+
+    return { user: updated };
+  });
 };

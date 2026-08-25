@@ -12,7 +12,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { db } from "../db/client.js";
-import { cases, caseParticipants, constitutionVersions, users } from "../db/schema.js";
+import { cases, caseParticipants, constitutionVersions, users, notifications } from "../db/schema.js";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { getAddress, isAddress } from "viem";
 
@@ -149,6 +149,20 @@ export const caseRoutes: FastifyPluginAsync = async (app) => {
       .set({ stakeLockedAt: new Date(), stakeTxHash: body.stakeTxHash })
       .where(and(eq(caseParticipants.caseId, id), eq(caseParticipants.role, "claimant")));
 
+    const [respondentParticipant] = await db
+      .select()
+      .from(caseParticipants)
+      .where(and(eq(caseParticipants.caseId, id), eq(caseParticipants.role, "respondent")))
+      .limit(1);
+    if (respondentParticipant) {
+      await db.insert(notifications).values({
+        userId: respondentParticipant.userId,
+        caseId: id,
+        type: "case_stake_required",
+        message: `${existing.caseNumber} was opened against you — fund your matching stake to open the evidence window.`,
+      });
+    }
+
     return { case: updated };
   });
 
@@ -179,6 +193,16 @@ export const caseRoutes: FastifyPluginAsync = async (app) => {
       .update(caseParticipants)
       .set({ stakeLockedAt: new Date(), stakeTxHash: body.stakeTxHash })
       .where(eq(caseParticipants.id, participant.id));
+
+    const [caseRow] = await db.select().from(cases).where(eq(cases.id, id)).limit(1);
+    if (caseRow) {
+      await db.insert(notifications).values({
+        userId: caseRow.createdByUserId,
+        caseId: id,
+        type: "case_funded",
+        message: `The respondent locked their stake on ${caseRow.caseNumber} — the evidence window is now open.`,
+      });
+    }
 
     return { ok: true };
   });

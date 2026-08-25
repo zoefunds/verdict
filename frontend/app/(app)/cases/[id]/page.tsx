@@ -12,7 +12,8 @@ import { EscrowBar } from "@/components/case/EscrowBar";
 import { EvidenceTimeline } from "@/components/case/EvidenceTimeline";
 import { ConstitutionSidebar } from "@/components/case/ConstitutionSidebar";
 import { EvidenceSubmitForm } from "@/components/case/EvidenceSubmitForm";
-import { useCase, useCaseEvidence } from "@/hooks/useCases";
+import { VerdictCard } from "@/components/case/VerdictCard";
+import { useCase, useCaseEvidence, useContractCase } from "@/hooks/useCases";
 import { useTransaction } from "@/hooks/useTransaction";
 import { usePublishCaseOnChain } from "@/hooks/usePublishCaseOnChain";
 import { genlayerContract } from "@/lib/genlayer";
@@ -25,6 +26,7 @@ export default function CaseDetailsPage() {
   const params = useParams<{ id: string }>();
   const { data, isLoading, isError } = useCase(params.id);
   const { data: evidenceData } = useCaseEvidence(params.id);
+  const { data: onChainCase } = useContractCase(data?.case.contractCaseId);
   const { state, run } = useTransaction();
   const { state: publishState, publish } = usePublishCaseOnChain();
   const { address } = useAccount();
@@ -117,6 +119,8 @@ export default function CaseDetailsPage() {
               </p>
             </CardContent>
           </Card>
+
+          <VerdictCard onChainCase={onChainCase as Record<string, unknown> | undefined} />
 
           <EscrowBar stakeAmountWei={c.stakeAmountWei} participants={participants} respondentAddress={c.respondentAddress} />
 

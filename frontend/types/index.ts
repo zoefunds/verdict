@@ -106,3 +106,23 @@ export interface ConstitutionArticle {
   isImmutableCore: boolean;
   displayOrder: number;
 }
+
+export type NotificationType =
+  | "case_stake_required"
+  | "case_funded"
+  | "evidence_submitted"
+  | "verdict_rendered"
+  | "appeal_window_opened"
+  | "appeal_filed"
+  | "case_settled"
+  | "case_abandoned_recoverable";
+
+export interface Notification {
+  id: string;
+  userId: string;
+  caseId: string | null;
+  type: NotificationType;
+  message: string;
+  readAt: string | null;
+  createdAt: string;
+}

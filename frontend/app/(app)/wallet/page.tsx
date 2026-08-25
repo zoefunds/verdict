@@ -1,14 +1,29 @@
 "use client";
 
+import Link from "next/link";
 import { useAccount, useBalance } from "wagmi";
 import { AppTopbar } from "@/components/layout/AppTopbar";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { shortAddress } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/skeleton";
+import { StatusBadge } from "@/components/case/StatusBadge";
+import { shortAddress, formatWei } from "@/lib/utils";
 import { isContractDeployed } from "@/lib/env";
+import { useMyCases } from "@/hooks/useCases";
+import { useAuth } from "@/hooks/useAuth";
 
 export default function WalletPage() {
   const { address, isConnected, chain } = useAccount();
   const { data: balance } = useBalance({ address });
+  const { isAuthenticated } = useAuth();
+  const { data: casesData, isLoading: casesLoading } = useMyCases();
+  const cases = casesData?.cases ?? [];
+
+  // A stake is actually locked (real GEN sitting in the contract) once the
+  // case has left DRAFT — draft cases haven't submitted the on-chain
+  // transaction yet, so their stakeAmountWei is a planned figure, not
+  // locked collateral. Never conflate the two.
+  const lockedCases = cases.filter((c) => c.status !== "draft" && c.status !== "cancelled");
+  const totalLockedWei = lockedCases.reduce((sum, c) => sum + BigInt(c.stakeAmountWei || "0"), BigInt(0));
 
   return (
     <div>
@@ -31,7 +46,7 @@ export default function WalletPage() {
           </CardContent>
         </Card>
 
-        {!isContractDeployed && (
+        {!isContractDeployed ? (
           <Card>
             <CardHeader>
               <CardTitle>GenLayer Collateral</CardTitle>
@@ -41,14 +56,54 @@ export default function WalletPage() {
               </CardDescription>
             </CardHeader>
           </Card>
+        ) : !isAuthenticated ? (
+          <Card>
+            <CardContent className="p-6 text-body-sm text-on-surface-variant">
+              Sign in with your wallet to see your case collateral.
+            </CardContent>
+          </Card>
+        ) : (
+          <Card>
+            <CardHeader>
+              <CardTitle>Case Collateral</CardTitle>
+              <CardDescription>
+                Combined stake terms (both sides) across every non-draft case you&apos;re a party to — the
+                per-side amount actually locked in escrow may be less if the other party hasn&apos;t funded
+                yet.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {casesLoading ? (
+                <Skeleton className="h-8 w-40" />
+              ) : (
+                <p className="font-mono text-headline-sm text-on-surface">{formatWei(totalLockedWei.toString())} GEN</p>
+              )}
+              {lockedCases.length > 0 && (
+                <ul className="space-y-1">
+                  {lockedCases.map((c) => (
+                    <li key={c.id} className="flex items-center justify-between text-body-sm">
+                      <Link href={`/cases/${c.id}`} className="text-on-surface hover:text-primary">
+                        {c.caseNumber}
+                      </Link>
+                      <span className="flex items-center gap-2">
+                        <StatusBadge status={c.status} />
+                        <span className="font-mono text-on-surface-variant">{formatWei(c.stakeAmountWei)} GEN</span>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
         )}
 
         <Card>
           <CardHeader>
             <CardTitle>Transaction History</CardTitle>
             <CardDescription>
-              Coming soon — the backend does not yet expose a per-user transaction history endpoint. This
-              section is intentionally left as a stub rather than showing fabricated data.
+              Coming soon — the backend does not yet expose a per-user transaction history endpoint (stake
+              locks, settlements, appeal bonds as a flat list). Case-level transaction outcomes are visible
+              on each case&apos;s own page above in the meantime.
             </CardDescription>
           </CardHeader>
         </Card>

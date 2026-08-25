@@ -3,6 +3,23 @@
 import { useQuery } from "@tanstack/react-query";
 import { casesApi, casebookApi, evidenceApi, constitutionsApi } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
+import { fetchCaseFromContract } from "@/lib/genlayer-proxy";
+import { env, isContractDeployed } from "@/lib/env";
+
+/**
+ * Reads the on-chain case record — this is where verdict/outcome data
+ * lives (outcome, verdict_split_bps, confidence_bps, reasoning_summary),
+ * not in the off-chain Postgres row, since the contract is the source of
+ * truth for anything financial/decisional. Only fetches once a
+ * contractCaseId exists (draft cases have none yet).
+ */
+export function useContractCase(contractCaseId: string | null | undefined) {
+  return useQuery({
+    queryKey: ["contract-case", contractCaseId],
+    queryFn: () => fetchCaseFromContract(env.apiBaseUrl, Number(contractCaseId)),
+    enabled: Boolean(contractCaseId) && isContractDeployed,
+  });
+}
 
 export function useMyCases() {
   const isAuthenticated = Boolean(useAuthStore((s) => s.accessToken));

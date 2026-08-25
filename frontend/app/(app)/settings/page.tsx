@@ -1,7 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { AppTopbar } from "@/components/layout/AppTopbar";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
 
 export default function SettingsPage() {
@@ -30,12 +32,13 @@ export default function SettingsPage() {
         <Card>
           <CardHeader>
             <CardTitle>Profile Settings</CardTitle>
-            <CardDescription>
-              Not yet implemented — the backend's users table supports displayName/bio/avatarUrl, but no
-              PATCH /auth/me (or similar) endpoint exists yet to persist edits. Rather than fake a working
-              save button, this section is left as an honest stub.
-            </CardDescription>
+            <CardDescription>Display name and bio are edited from your Profile page.</CardDescription>
           </CardHeader>
+          <CardContent>
+            <Button variant="outline" size="sm" asChild>
+              <Link href="/profile">Go to Profile</Link>
+            </Button>
+          </CardContent>
         </Card>
 
         <Card>
