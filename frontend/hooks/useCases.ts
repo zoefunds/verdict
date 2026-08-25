@@ -25,7 +25,17 @@ export function useContractCase(contractCaseId: string | null | undefined) {
     // passed, or after the other party's transaction confirmed, with no
     // way to notice short of a manual page reload. Poll periodically so
     // both kinds of transition surface on their own.
-    refetchInterval: 15_000,
+    //
+    // AUDIT FIX (2026-08-25): was 15_000 — unlike useCase/useCaseEvidence
+    // below (which read Postgres through the backend API and don't touch
+    // GenLayer at all), this hook reads the contract directly via the
+    // GenLayer proxy and shares StudioNet's rate-limited RPC budget with
+    // the indexer and every other open tab. StudioNet enforces a
+    // 5,000-requests/DAY cap in addition to its 30/min cap (confirmed
+    // live — see docs/GENLAYER.md "Rate limiting"); at 15s this hook alone
+    // could contribute 5,760 requests/day from a SINGLE open tab, on top
+    // of the indexer's own baseline. 30s halves that contribution per tab.
+    refetchInterval: 30_000,
   });
 }
 

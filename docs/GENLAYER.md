@@ -48,12 +48,51 @@ surfaced explicitly in the verdict reasoning rather than silently ignored.
 ## Indexer
 
 `backend/src/indexer/` polls the contract's view methods
-(`get_case_count`, `get_case`) on a 15-second interval and syncs derived
-case status into Postgres (`backend/src/indexer/poll.ts`). This is a
-polling design rather than an event-log subscription because the contract
-records its own bounded per-case event log internally
+(`get_case_count`, `get_case`) on a **60-second** interval and syncs
+derived case status into Postgres (`backend/src/indexer/poll.ts`). This is
+a polling design rather than an event-log subscription because the
+contract records its own bounded per-case event log internally
 (`get_case_events`) rather than emitting Solidity-style logs — polling view
 methods is the reliable sync mechanism for this execution model.
+
+## Rate limiting
+
+StudioNet enforces **two independent** caps, confirmed live against a
+production deployment, not assumed from docs:
+- **30 requests/minute** (short-term burst cap).
+- **5,000 requests/day** (sustained-usage cap) — this one is easy to miss
+  because nothing about it is visible on a per-minute basis; a client can
+  stay well under 30/min and still exhaust it within a few hours of
+  sustained polling.
+
+`backend/src/lib/rate-limiter.ts`'s `acquireGenlayerRpcSlot()` coordinates
+BOTH caps via Upstash Redis, shared across the backend API process, the
+indexer process, and every frontend tab (frontend reads never call
+StudioNet directly — they go through `backend/src/routes/genlayer.ts`
+`/genlayer/*` so the shared budget is actually shared; only wallet-signed
+writes go direct from the browser, and those are user transactions, not
+RPC-budget reads):
+- Per-minute: capped at 25 (conservative margin under 30).
+- Per-day: capped at 4,500 (conservative margin under 5,000), checked ONCE
+  per logical call before the per-minute retry loop — incrementing it once
+  per retry iteration instead would burn multiple daily-budget slots for
+  one actual RPC call.
+
+**Bug found and fixed (2026-08-25, live production audit):** the indexer's
+original 15-second poll interval alone made 86,400/15 = 5,760
+`get_case_count` calls/day — over the real 5,000/day cap with ZERO user
+traffic and before counting any `get_case` calls per open case. The daily
+cap didn't exist as a concept anywhere in this codebase before this fix;
+only the per-minute cap was ever coordinated. Confirmed live: the deployed
+indexer was silently failing almost every poll cycle with `GenLayer RPC
+error (gen_call): Rate limit exceeded: 5000 requests per day`, so on-chain
+status changes (funded → evidence window → under investigation → verdict
+rendered, etc.) never reached Postgres or the frontend for extended
+stretches — cases and case status can silently stop updating on the
+frontend with no user-visible error if this regresses. Fixed by raising
+the poll interval to 60s AND adding the daily budget tracker above, so a
+future regression fails loudly (`GenLayer RPC daily budget exhausted`)
+instead of silently starving the indexer.
 
 ## Current status
 

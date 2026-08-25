@@ -22,6 +22,17 @@ const GENLAYER_RATE_LIMIT_PER_MINUTE = 25; // conservative margin under GenLayer
 const WINDOW_SECONDS = 60;
 const RATE_LIMIT_KEY = "verdict:genlayer:rpc:window";
 
+// AUDIT FIX (2026-08-25): StudioNet also enforces a separate 5,000
+// requests/DAY quota, independent of the 30/min cap above — confirmed via
+// a real "Rate limit exceeded: 5000 requests per day" error from a live
+// deployment. Nothing here previously tracked daily usage at all, so the
+// per-minute limiter could (and did) let the indexer sustain a rate that
+// exhausts the daily quota in a few hours even while staying well under
+// 25/min. This is a second, independent budget — both must pass.
+const GENLAYER_DAILY_LIMIT = 4500; // conservative margin under StudioNet's 5,000/day cap
+const DAY_SECONDS = 24 * 60 * 60;
+const DAILY_LIMIT_KEY = "verdict:genlayer:rpc:day";
+
 let redisClient: Redis | null = null;
 
 function getRedis(): Redis | null {
@@ -55,6 +66,29 @@ export async function acquireGenlayerRpcSlot(): Promise<void> {
   const redis = getRedis();
   if (!redis) {
     return; // no Redis configured — proceed without coordination
+  }
+
+  // Daily budget is checked ONCE, before the per-minute retry loop below —
+  // it must only be incremented once per logical call, not once per retry
+  // iteration (a call that backs off 5 times for the per-minute window
+  // would otherwise burn 5 daily-budget slots for one actual RPC call).
+  // If the day's quota is gone, no amount of waiting seconds fixes that,
+  // so this fails fast with a distinct, actionable error rather than
+  // spinning for 20s only to still fail.
+  let dailyCount: number;
+  try {
+    dailyCount = await redis.incr(DAILY_LIMIT_KEY);
+    if (dailyCount === 1) {
+      await redis.expire(DAILY_LIMIT_KEY, DAY_SECONDS);
+    }
+  } catch (err) {
+    console.error("[rate-limiter] redis error on daily counter, failing open", err);
+    dailyCount = 0;
+  }
+  if (dailyCount > GENLAYER_DAILY_LIMIT) {
+    throw new Error(
+      `GenLayer RPC daily budget exhausted (>${GENLAYER_DAILY_LIMIT}/day) — refusing this call rather than risk StudioNet's hard 5,000/day cutoff`,
+    );
   }
 
   const MAX_WAIT_MS = 20_000;

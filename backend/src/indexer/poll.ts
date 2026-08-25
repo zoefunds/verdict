@@ -71,10 +71,22 @@ export async function syncOneCase(contractCaseId: number): Promise<void> {
   }
 }
 
-export async function syncAllCases(): Promise<void> {
+/**
+ * Returns whether the cycle completed a real read from the contract (true)
+ * or was skipped/failed before that point (false). AUDIT FIX (2026-08-25):
+ * the caller (indexer/run.ts) uses this to back off on sustained failures
+ * — a fixed-interval retry-forever loop was observed live to keep hammering
+ * StudioNet at the same rate even while every single call was being
+ * rejected with "Rate limit exceeded: 5000 requests per day". If rejected
+ * calls still count against that daily counter (plausible — StudioNet has
+ * to receive and evaluate the request to reject it), blind fixed-interval
+ * retrying can perpetuate its own exhaustion instead of giving the quota
+ * room to recover.
+ */
+export async function syncAllCases(): Promise<boolean> {
   if (!isContractConfigured()) {
     console.warn("[indexer] VERDICT_CONTRACT_ADDRESS not configured — skipping sync cycle");
-    return;
+    return false;
   }
 
   let count: number;
@@ -82,7 +94,7 @@ export async function syncAllCases(): Promise<void> {
     count = await getCaseCount();
   } catch (err) {
     console.error("[indexer] failed to read case count from contract", err);
-    return;
+    return false;
   }
 
   // Case ids are 0-indexed (contracts/verdict_contract.py create_case:
@@ -98,4 +110,5 @@ export async function syncAllCases(): Promise<void> {
       console.error(`[indexer] failed to sync case ${id}`, err);
     }
   }
+  return true;
 }
