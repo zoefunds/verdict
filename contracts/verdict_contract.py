@@ -1,40 +1,5 @@
-# VERDICT — collateralized, evidence-based dispute resolution protocol
-# v1.0.0
+# v0.2.17
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
-#
-# VERDICT is NOT a prediction market or gambling contract. Two parties who
-# already disagree about a real-world fact (e.g. "was the package delivered")
-# each lock GEN collateral behind their own account of events. The contract
-# investigates the evidence they submit — plus independently-fetched web
-# evidence at verdict time — against a versioned "constitution" of rules,
-# and renders a verdict via GenLayer's Optimistic Democracy (LLM-backed
-# non-deterministic execution + validator equivalence checking). The loser's
-# stake moves to a protocol treasury, the winner reclaims their own stake,
-# and partial verdicts split proportionally. Either party may appeal once.
-#
-# Deploy target: GenLayer Studio / StudioNet. Fee token: GEN.
-# Deployed StudioNet address: 0x56118ae3ee66b662a9a4CEf3424008c1D1036DbD
-#
-# ============================================================================
-#  TABLE OF CONTENTS
-# ============================================================================
-#   1. Imports & module constants
-#   2. Storage dataclasses (Case, ConstitutionVersion, Evidence, Appeal, ...)
-#   3. Escrow primitives — single GEN emission chokepoint (_send_gen)
-#   4. Pure / deterministic helpers (validation, JSON parsing, coercion)
-#   5. The Contract
-#      5.1 Storage schema
-#      5.2 Constructor
-#      5.3 Internal utilities
-#      5.4 Constitution / governance (versioned articles + case rules)
-#      5.5 Case lifecycle — creation, joinder, escrow funding
-#      5.6 Evidence submission
-#      5.7 Non-deterministic verdict evaluation (LLM + web-fetch + eq. principle)
-#      5.8 Settlement / payout (winner reclaim, loser->treasury, proportional)
-#      5.9 Appeals (one per case, 7-day window, appeal bond)
-#      5.10 Abandonment / timeout recovery exits
-#      5.11 Views
-# ============================================================================
 
 import datetime
 import hashlib
