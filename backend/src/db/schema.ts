@@ -280,6 +280,14 @@ export const cases = pgTable(
     caseRules: jsonb("case_rules").$type<string[]>().default([]).notNull(),
 
     createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id),
+    // The contract's create_case requires a respondent_address at creation
+    // time — VERDICT has no "open to anyone" respondent concept, the
+    // claimant names who they're disputing with. Stored here (not only via
+    // case_participants) because the respondent may not have signed in yet
+    // when the case is created. Nullable at the DB level only to avoid
+    // breaking pre-existing draft rows created before this field existed —
+    // the API requires it on every new case (see routes/cases.ts).
+    respondentAddress: varchar("respondent_address", { length: 42 }),
 
     stakeAmountWei: numeric("stake_amount_wei", { precision: 78, scale: 0 }).notNull(),
     appealBondAmountWei: numeric("appeal_bond_amount_wei", { precision: 78, scale: 0 }).notNull(),

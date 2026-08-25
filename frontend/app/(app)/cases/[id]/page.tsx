@@ -14,16 +14,21 @@ import { ConstitutionSidebar } from "@/components/case/ConstitutionSidebar";
 import { EvidenceSubmitForm } from "@/components/case/EvidenceSubmitForm";
 import { useCase, useCaseEvidence } from "@/hooks/useCases";
 import { useTransaction } from "@/hooks/useTransaction";
+import { usePublishCaseOnChain } from "@/hooks/usePublishCaseOnChain";
 import { genlayerContract } from "@/lib/genlayer";
+import { casesApi } from "@/lib/api";
 import { formatWei, formatDateTime } from "@/lib/utils";
 import { useAccount } from "wagmi";
+import { useQueryClient } from "@tanstack/react-query";
 
 export default function CaseDetailsPage() {
   const params = useParams<{ id: string }>();
   const { data, isLoading, isError } = useCase(params.id);
   const { data: evidenceData } = useCaseEvidence(params.id);
   const { state, run } = useTransaction();
+  const { state: publishState, publish } = usePublishCaseOnChain();
   const { address } = useAccount();
+  const queryClient = useQueryClient();
 
   if (isLoading) {
     return (
@@ -62,6 +67,12 @@ export default function CaseDetailsPage() {
           contractCaseId: Number(c.contractCaseId ?? 0),
           valueWei: BigInt(c.stakeAmountWei),
         });
+        // Confirm with the backend so the respondent's case_participants
+        // row reflects the lock (the indexer separately updates the
+        // overall case status by polling the contract, but only this
+        // confirms the per-participant lock timestamp shown in EscrowBar).
+        await casesApi.fundRespondentConfirm(c.id, result.txHash);
+        queryClient.invalidateQueries({ queryKey: ["case", c.id] });
         return result.txHash;
       });
     } catch {
@@ -69,6 +80,20 @@ export default function CaseDetailsPage() {
       if (!genlayerContract.isDeployed) {
         toast.error("Contract not yet deployed — cannot submit an on-chain stake transaction yet.");
       }
+    }
+  }
+
+  async function handlePublish() {
+    if (!address) {
+      toast.error("Connect your wallet first.");
+      return;
+    }
+    try {
+      await publish(address, c);
+      toast.success("Case published on-chain — your stake is locked.");
+      queryClient.invalidateQueries({ queryKey: ["case", c.id] });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to publish case on-chain");
     }
   }
 
@@ -93,7 +118,37 @@ export default function CaseDetailsPage() {
             </CardContent>
           </Card>
 
-          <EscrowBar stakeAmountWei={c.stakeAmountWei} participants={participants} />
+          <EscrowBar stakeAmountWei={c.stakeAmountWei} participants={participants} respondentAddress={c.respondentAddress} />
+
+          {c.status === "draft" && (
+            <Card>
+              <CardContent className="space-y-3 p-6">
+                <p className="text-body-sm text-on-surface-variant">
+                  This case is a draft — it isn&apos;t real until you publish it on-chain and lock your
+                  stake. Respondent: <span className="font-mono text-on-surface">{c.respondentAddress ?? "not set"}</span>
+                </p>
+                {!genlayerContract.isDeployed ? (
+                  <div className="rounded border border-tertiary/40 bg-tertiary/10 p-4 text-body-sm text-tertiary">
+                    Contract not yet deployed — the on-chain case-creation transaction cannot be submitted
+                    until NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS is configured.
+                  </div>
+                ) : (
+                  <Button
+                    onClick={handlePublish}
+                    disabled={publishState.status === "wallet-confirm" || publishState.status === "pending"}
+                  >
+                    {publishState.status === "wallet-confirm"
+                      ? "Confirm in wallet…"
+                      : publishState.status === "pending"
+                        ? "Publishing…"
+                        : `Publish On-Chain & Lock Stake (${formatWei(c.stakeAmountWei)} GEN)`}
+                  </Button>
+                )}
+                {publishState.status === "failed" && <p className="text-body-sm text-error">{publishState.error}</p>}
+                <TxStateNote state={publishState.status} />
+              </CardContent>
+            </Card>
+          )}
 
           {c.status === "awaiting_respondent_stake" && (
             <Card>
@@ -134,7 +189,18 @@ export default function CaseDetailsPage() {
             </CardContent>
           </Card>
 
-          <EvidenceSubmitForm caseId={c.id} />
+          {c.status === "evidence_window" || c.status === "re_investigation" ? (
+            <EvidenceSubmitForm caseId={c.id} />
+          ) : (
+            <Card>
+              <CardContent className="p-6 text-body-sm text-on-surface-variant">
+                Evidence can only be submitted while the case is in its evidence window (current status:{" "}
+                <span className="font-mono text-on-surface">{c.status}</span>). This matches the contract&apos;s
+                own rule — <code className="font-mono">submit_evidence</code> only accepts calls during{" "}
+                <code className="font-mono">EVIDENCE_WINDOW</code> or <code className="font-mono">RE_INVESTIGATION</code>.
+              </CardContent>
+            </Card>
+          )}
 
           {inAppealWindow && (
             <Card>

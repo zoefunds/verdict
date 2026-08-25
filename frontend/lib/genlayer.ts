@@ -88,30 +88,36 @@ export const genlayerContract = {
   isDeployed: isContractDeployed,
 
   /**
-   * Creates a case on-chain. Maps to `create_case(...)` in
-   * contracts/verdict_contract.py — a @gl.public.write.payable method, so
-   * requiredStakeWei must be sent as the transaction's value.
+   * Creates a case on-chain. Maps to `create_case(respondent_address, title,
+   * claim_text, required_stake_wei, evidence_window_seconds,
+   * respondent_join_window_seconds)` in contracts/verdict_contract.py — a
+   * @gl.public.write.payable method, so requiredStakeWei must be sent as
+   * the transaction's value AND must exactly equal required_stake_wei (the
+   * contract rejects "enough", it requires exact match). Note the contract
+   * does not take resolutionRule/constitutionVersion/caseRules as
+   * parameters at all — those live only in the off-chain case record; the
+   * on-chain contract only needs the respondent, title, claim, and stake
+   * terms to open escrow.
    */
   async createCase(args: {
     account: `0x${string}`;
+    respondentAddress: `0x${string}`;
     requiredStakeWei: bigint;
     title: string;
     claimText: string;
-    resolutionRule: string;
-    constitutionVersion: number;
-    caseRules: string[];
     evidenceWindowSeconds: number;
+    respondentJoinWindowSeconds?: number;
   }): Promise<{ txHash: string }> {
     return writeCase(
       args.account,
       "create_case",
       [
+        args.respondentAddress,
         args.title,
         args.claimText,
-        args.resolutionRule,
-        args.constitutionVersion,
-        args.caseRules,
+        args.requiredStakeWei.toString(),
         args.evidenceWindowSeconds,
+        args.respondentJoinWindowSeconds ?? 14 * 24 * 60 * 60,
       ],
       args.requiredStakeWei,
     );
@@ -126,19 +132,27 @@ export const genlayerContract = {
     return writeCase(args.account, "fund_respondent_stake", [args.contractCaseId], args.valueWei);
   },
 
-  /** Maps to `submit_evidence(case_id, evidence_type, ref, content_hash)`. Not payable. */
+  /**
+   * Maps to `submit_evidence(case_id, kind, url, description,
+   * tx_reference)`. Not payable. The contract only accepts this while the
+   * case is in EVIDENCE_WINDOW or RE_INVESTIGATION status — calling it
+   * outside that window reverts. `kind` must be one of URL / TEXT_STATEMENT
+   * / TX_RECORD / DOCUMENT_HASH.
+   */
   async submitEvidenceOnChain(args: {
     account: `0x${string}`;
     contractCaseId: number;
-    evidenceType: string;
-    reference: string;
-    contentHashSha256: string;
+    kind: "URL" | "TEXT_STATEMENT" | "TX_RECORD" | "DOCUMENT_HASH";
+    url?: string;
+    description?: string;
+    txReference?: string;
   }): Promise<{ txHash: string }> {
     return writeCase(args.account, "submit_evidence", [
       args.contractCaseId,
-      args.evidenceType,
-      args.reference,
-      args.contentHashSha256,
+      args.kind,
+      args.url ?? "",
+      args.description ?? "",
+      args.txReference ?? "",
     ]);
   },
 

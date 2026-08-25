@@ -28,3 +28,18 @@ export async function fetchProtocolConfig(apiBaseUrl: string) {
   const body = (await res.json()) as { config: Record<string, unknown> };
   return body.config;
 }
+
+/**
+ * Case ids on the contract are sequential starting at 0, so the count read
+ * immediately before submitting create_case IS the id the new case will
+ * receive — this is how the frontend learns the new contractCaseId without
+ * needing to decode a write transaction's return value.
+ */
+export async function fetchCaseCount(apiBaseUrl: string): Promise<number> {
+  const res = await fetch(`${apiBaseUrl}/genlayer/case-count`);
+  if (!res.ok) {
+    throw new Error(`Failed to read case count from contract (${res.status})`);
+  }
+  const body = (await res.json()) as { count: number };
+  return body.count;
+}

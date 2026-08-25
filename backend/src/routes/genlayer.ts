@@ -12,12 +12,28 @@
  */
 
 import type { FastifyPluginAsync } from "fastify";
-import { getCase, getCaseEvents, getEvidence, viewCall, isContractConfigured } from "../lib/genlayer-client.js";
+import { getCase, getCaseCount, getCaseEvents, getEvidence, viewCall, isContractConfigured } from "../lib/genlayer-client.js";
 
 export const genlayerRoutes: FastifyPluginAsync = async (app) => {
   app.get("/genlayer/status", async () => ({
     contractConfigured: isContractConfigured(),
   }));
+
+  // Read immediately before submitting create_case: since case ids are
+  // sequential starting at 0, this count IS the id the new case will get.
+  // Avoids needing to decode a write transaction's return value at all.
+  app.get("/genlayer/case-count", async (req, reply) => {
+    if (!isContractConfigured()) {
+      return reply.code(503).send({ error: "Contract not yet configured" });
+    }
+    try {
+      const count = await getCaseCount();
+      return { count };
+    } catch (err) {
+      req.log.warn({ err }, "genlayer get_case_count failed");
+      return reply.code(502).send({ error: "Failed to read case count from contract" });
+    }
+  });
 
   app.get("/genlayer/case/:caseId", async (req, reply) => {
     if (!isContractConfigured()) {

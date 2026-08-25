@@ -94,6 +94,7 @@ export const casesApi = {
     category: string;
     constitutionVersionId: string;
     caseRules: string[];
+    respondentAddress: string;
     stakeAmountWei: string;
     appealBondAmountWei: string;
     visibility: "public" | "private";
@@ -103,6 +104,12 @@ export const casesApi = {
     request<{ case: Case }>(`/cases/${id}/link-contract`, {
       method: "PATCH",
       body: { contractCaseId, stakeTxHash },
+      auth: true,
+    }),
+  fundRespondentConfirm: (id: string, stakeTxHash: string) =>
+    request<{ ok: boolean }>(`/cases/${id}/fund-respondent`, {
+      method: "PATCH",
+      body: { stakeTxHash },
       auth: true,
     }),
   get: (id: string) => request<{ case: Case; participants: CaseParticipant[] }>(`/cases/${id}`, { auth: false }),

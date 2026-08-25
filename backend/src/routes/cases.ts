@@ -12,8 +12,9 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { db } from "../db/client.js";
-import { cases, caseParticipants, constitutionVersions } from "../db/schema.js";
+import { cases, caseParticipants, constitutionVersions, users } from "../db/schema.js";
 import { and, desc, eq, inArray } from "drizzle-orm";
+import { getAddress, isAddress } from "viem";
 
 const CreateCaseBody = z.object({
   title: z.string().min(8).max(200),
@@ -22,6 +23,11 @@ const CreateCaseBody = z.object({
   category: z.string().min(2).max(60),
   constitutionVersionId: z.string().uuid(),
   caseRules: z.array(z.string().max(500)).max(20).default([]),
+  // The contract's create_case requires a respondent address at creation
+  // time (see contracts/verdict_contract.py) — VERDICT is a two-named-
+  // parties dispute, not an open-to-anyone claim. The claimant must know
+  // who they're disputing with.
+  respondentAddress: z.string().refine((v) => isAddress(v), "must be a valid wallet address"),
   stakeAmountWei: z.string().regex(/^\d+$/, "must be a base-10 integer string"),
   appealBondAmountWei: z.string().regex(/^\d+$/),
   visibility: z.enum(["public", "private"]).default("public"),
@@ -40,7 +46,12 @@ export const caseRoutes: FastifyPluginAsync = async (app) => {
   // real and enters the OPEN state.
   app.post("/cases", { onRequest: [app.authenticate] }, async (req, reply) => {
     const body = CreateCaseBody.parse(req.body);
-    const { sub: userId } = req.user as { sub: string };
+    const { sub: userId, walletAddress: claimantWalletAddress } = req.user as { sub: string; walletAddress: string };
+
+    const respondentAddress = getAddress(body.respondentAddress);
+    if (claimantWalletAddress && getAddress(claimantWalletAddress) === respondentAddress) {
+      return reply.code(400).send({ error: "The respondent cannot be the same wallet as the claimant" });
+    }
 
     const [version] = await db
       .select()
@@ -63,6 +74,7 @@ export const caseRoutes: FastifyPluginAsync = async (app) => {
         constitutionVersionId: body.constitutionVersionId,
         caseRules: body.caseRules,
         createdByUserId: userId,
+        respondentAddress,
         stakeAmountWei: body.stakeAmountWei,
         appealBondAmountWei: body.appealBondAmountWei,
         visibility: body.visibility,
@@ -75,6 +87,26 @@ export const caseRoutes: FastifyPluginAsync = async (app) => {
       caseId: created!.id,
       userId,
       role: "claimant",
+    });
+
+    // The respondent is named by address at creation time but may never
+    // have signed in — get-or-create a user row for them (no session/login
+    // implied, just a stable identity to attach the participant row to) so
+    // the case's participant list is complete from the start rather than
+    // only gaining a respondent row once they happen to fund their stake.
+    const [existingRespondentUser] = await db
+      .select()
+      .from(users)
+      .where(eq(users.walletAddress, respondentAddress))
+      .limit(1);
+    const respondentUserId =
+      existingRespondentUser?.id ??
+      (await db.insert(users).values({ walletAddress: respondentAddress }).returning({ id: users.id }))[0]!.id;
+
+    await db.insert(caseParticipants).values({
+      caseId: created!.id,
+      userId: respondentUserId,
+      role: "respondent",
     });
 
     return reply.code(201).send({ case: created });
@@ -118,6 +150,37 @@ export const caseRoutes: FastifyPluginAsync = async (app) => {
       .where(and(eq(caseParticipants.caseId, id), eq(caseParticipants.role, "claimant")));
 
     return { case: updated };
+  });
+
+  const FundRespondentBody = z.object({ stakeTxHash: z.string().min(1) });
+
+  // Mirrors link-contract, but for the respondent's own on-chain
+  // fund_respondent_stake confirmation. Only touches the respondent's
+  // case_participants row (stakeLockedAt/stakeTxHash) — the case's overall
+  // status transition is left to the indexer polling the contract, so this
+  // never races with that as the source of truth for status.
+  app.patch("/cases/:id/fund-respondent", { onRequest: [app.authenticate] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = FundRespondentBody.parse(req.body);
+    const { sub: userId } = req.user as { sub: string };
+
+    const [participant] = await db
+      .select()
+      .from(caseParticipants)
+      .where(and(eq(caseParticipants.caseId, id), eq(caseParticipants.role, "respondent")))
+      .limit(1);
+
+    if (!participant) return reply.code(404).send({ error: "Respondent participant not found for this case" });
+    if (participant.userId !== userId) {
+      return reply.code(403).send({ error: "Only the named respondent can confirm their stake" });
+    }
+
+    await db
+      .update(caseParticipants)
+      .set({ stakeLockedAt: new Date(), stakeTxHash: body.stakeTxHash })
+      .where(eq(caseParticipants.id, participant.id));
+
+    return { ok: true };
   });
 
   app.get("/cases/:id", async (req, reply) => {

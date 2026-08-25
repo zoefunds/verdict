@@ -32,6 +32,7 @@ export interface Case {
   constitutionVersionId: string;
   caseRules: string[];
   createdByUserId: string;
+  respondentAddress: string | null;
   stakeAmountWei: string;
   appealBondAmountWei: string;
   evidenceWindowHours: number;

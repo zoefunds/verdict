@@ -10,8 +10,11 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { useAccount } from "wagmi";
+import { isAddress, getAddress } from "viem";
 import { useAuth } from "@/hooks/useAuth";
 import { useActiveConstitutions } from "@/hooks/useCases";
+import { usePublishCaseOnChain } from "@/hooks/usePublishCaseOnChain";
 import { casesApi } from "@/lib/api";
 import { isContractDeployed } from "@/lib/env";
 import type { Case } from "@/types";
@@ -21,7 +24,9 @@ const STEPS = ["Claim", "Rules & Recipe", "Stake & Visibility", "Review"] as con
 export default function CreateCasePage() {
   const router = useRouter();
   const { isAuthenticated } = useAuth();
+  const { address } = useAccount();
   const { data: constitutionsData } = useActiveConstitutions();
+  const { state: publishState, publish } = usePublishCaseOnChain();
 
   const [step, setStep] = useState(0);
   const [submitting, setSubmitting] = useState(false);
@@ -34,6 +39,7 @@ export default function CreateCasePage() {
     category: "delivery",
     constitutionVersionId: "",
     caseRulesText: "",
+    respondentAddress: "",
     stakeAmountGen: "",
     appealBondAmountGen: "",
     evidenceWindowHours: 72,
@@ -62,6 +68,14 @@ export default function CreateCasePage() {
       toast.error("Sign in with your wallet first.");
       return;
     }
+    if (!isAddress(form.respondentAddress)) {
+      toast.error("Enter a valid respondent wallet address.");
+      return;
+    }
+    if (address && getAddress(form.respondentAddress) === getAddress(address)) {
+      toast.error("The respondent must be a different wallet than yours.");
+      return;
+    }
     setSubmitting(true);
     try {
       const { case: created } = await casesApi.create({
@@ -71,17 +85,29 @@ export default function CreateCasePage() {
         category: form.category,
         constitutionVersionId: form.constitutionVersionId,
         caseRules: form.caseRulesText.split("\n").map((s) => s.trim()).filter(Boolean),
+        respondentAddress: form.respondentAddress,
         stakeAmountWei: toWei(form.stakeAmountGen),
         appealBondAmountWei: toWei(form.appealBondAmountGen),
         visibility: form.visibility,
         evidenceWindowHours: form.evidenceWindowHours,
       });
       setCreatedCase(created);
-      toast.success("Case draft created. Next: submit your on-chain stake.");
+      toast.success("Case draft created. Next: publish it on-chain to lock your stake.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to create case");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handlePublish() {
+    if (!address || !createdCase) return;
+    try {
+      await publish(address, createdCase);
+      toast.success("Case published on-chain — your stake is locked.");
+      router.push(`/cases/${createdCase.id}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to publish case on-chain");
     }
   }
 
@@ -106,11 +132,26 @@ export default function CreateCasePage() {
                   the VERDICT contract has a live StudioNet deployment.
                 </div>
               ) : (
-                <p className="text-body-sm text-on-surface-variant">
-                  Ready to submit your on-chain stake for {createdCase.caseNumber}.
-                </p>
+                <>
+                  <p className="text-body-sm text-on-surface-variant">
+                    This will prompt your wallet to lock {form.stakeAmountGen || "0"} GEN and open the case
+                    against respondent {form.respondentAddress}.
+                  </p>
+                  <Button onClick={handlePublish} disabled={publishState.status === "wallet-confirm" || publishState.status === "pending"}>
+                    {publishState.status === "wallet-confirm"
+                      ? "Confirm in wallet…"
+                      : publishState.status === "pending"
+                        ? "Publishing…"
+                        : "Publish On-Chain & Lock Stake"}
+                  </Button>
+                  {publishState.status === "failed" && (
+                    <p className="text-body-sm text-error">{publishState.error}</p>
+                  )}
+                </>
               )}
-              <Button onClick={() => router.push(`/cases/${createdCase.id}`)}>Go to case</Button>
+              <Button variant="ghost" onClick={() => router.push(`/cases/${createdCase.id}`)}>
+                Skip for now — go to case
+              </Button>
             </CardContent>
           </Card>
         </div>
@@ -142,6 +183,17 @@ export default function CreateCasePage() {
                 </Field>
                 <Field label="Resolution Rule">
                   <Textarea value={form.resolutionRule} onChange={(e) => update("resolutionRule", e.target.value)} rows={3} placeholder="The claim is TRUE if..." />
+                </Field>
+                <Field label="Respondent Wallet Address">
+                  <Input
+                    value={form.respondentAddress}
+                    onChange={(e) => update("respondentAddress", e.target.value)}
+                    placeholder="0x..."
+                  />
+                  <p className="mt-1 text-body-sm text-on-surface-variant">
+                    VERDICT cases are between two named parties — enter the wallet address of the person
+                    you&apos;re disputing with. They&apos;ll fund a matching stake to open the case.
+                  </p>
                 </Field>
               </>
             )}
@@ -205,6 +257,7 @@ export default function CreateCasePage() {
             {step === 3 && (
               <div className="space-y-2 text-body-sm">
                 <ReviewRow label="Title" value={form.title} />
+                <ReviewRow label="Respondent" value={form.respondentAddress || "—"} />
                 <ReviewRow label="Category" value={form.category} />
                 <ReviewRow label="Stake" value={`${form.stakeAmountGen || "0"} GEN`} />
                 <ReviewRow label="Appeal Bond" value={`${form.appealBondAmountGen || "0"} GEN`} />

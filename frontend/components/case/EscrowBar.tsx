@@ -1,13 +1,15 @@
 import { Lock } from "lucide-react";
-import { formatWei } from "@/lib/utils";
+import { formatWei, shortAddress } from "@/lib/utils";
 import type { CaseParticipant } from "@/types";
 
 export function EscrowBar({
   stakeAmountWei,
   participants,
+  respondentAddress,
 }: {
   stakeAmountWei: string;
   participants: CaseParticipant[];
+  respondentAddress?: string | null;
 }) {
   const claimant = participants.find((p) => p.role === "claimant");
   const respondent = participants.find((p) => p.role === "respondent");
@@ -26,7 +28,13 @@ export function EscrowBar({
           <div className={`h-full flex-1 ${claimantLocked ? "bg-primary" : "bg-transparent"}`} />
           <div className={`h-full flex-1 ${respondentLocked ? "bg-primary" : "bg-transparent"}`} />
         </div>
-        <Side label="Respondent" locked={respondentLocked} amount={stakeAmountWei} align="right" />
+        <Side
+          label="Respondent"
+          locked={respondentLocked}
+          amount={stakeAmountWei}
+          align="right"
+          address={respondentAddress}
+        />
       </div>
       <p className="mt-4 text-body-sm text-on-surface-variant">
         Total collateral in escrow: <span className="font-mono text-on-surface">{formatWei((BigInt(stakeAmountWei || "0") * BigInt(claimantLocked ? 1 : 0) + BigInt(stakeAmountWei || "0") * BigInt(respondentLocked ? 1 : 0)).toString())} GEN</span>
@@ -35,10 +43,23 @@ export function EscrowBar({
   );
 }
 
-function Side({ label, locked, amount, align = "left" }: { label: string; locked: boolean; amount: string; align?: "left" | "right" }) {
+function Side({
+  label,
+  locked,
+  amount,
+  align = "left",
+  address,
+}: {
+  label: string;
+  locked: boolean;
+  amount: string;
+  align?: "left" | "right";
+  address?: string | null;
+}) {
   return (
     <div className={align === "right" ? "text-right" : "text-left"}>
       <p className="font-mono text-label-sm uppercase text-on-surface-variant">{label}</p>
+      {address && <p className="font-mono text-label-sm text-on-surface-variant">{shortAddress(address)}</p>}
       <p className="text-body-sm text-on-surface">{formatWei(amount)} GEN</p>
       <p className={`text-label-sm ${locked ? "text-secondary" : "text-on-surface-variant"}`}>{locked ? "Locked" : "Pending"}</p>
     </div>
