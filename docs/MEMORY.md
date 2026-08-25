@@ -346,3 +346,81 @@ action (e.g. respondent hasn't funded yet) — currently only refetches on
 explicit user actions/query invalidation, so a second browser tab won't
 see the other party's on-chain action until it's refreshed or its own
 `useContractCase`/`useCase` queries next run.
+
+**Update:** the polling gap above is now fixed — see the full audit below.
+
+## Full contract <-> backend <-> frontend audit (2026-08-25, continued)
+
+Systematically diffed every `@gl.public.write`/`@gl.public.view` method in
+`contracts/verdict_contract.py` against what was actually wired in
+`frontend/lib/genlayer.ts` (writes) and `backend/src/routes/genlayer.ts` +
+`backend/src/lib/genlayer-client.ts` (read proxy). Found and fixed real
+gaps, in order of severity:
+
+1. **Appeal bond bug that would have reverted every appeal.** The appeal
+   page sent `c.appealBondAmountWei` — a value the claimant typed into the
+   Create Case wizard and that gets stored in Postgres — as the on-chain
+   appeal bond. But `create_case` has no appeal-bond parameter at all, and
+   `file_appeal` computes the *required* bond itself, independently, as
+   `(claimant_stake_wei + respondent_stake_wei) * protocol appeal_bond_bps
+   / 10000` (a PROTOCOL-WIDE setting, `get_protocol_config().appeal_bond_bps`,
+   currently 2000 = 20%). Any mismatch reverts with "attached GEN must
+   exactly equal the required appeal bond". For VX-5379 (60 GEN each side,
+   120 GEN pot, 20% protocol bps) the real requirement is 24 GEN — the
+   wizard had stored 12 GEN (20% of one side only). Fixed:
+   `app/(app)/cases/[id]/appeal/page.tsx` now computes the bond live from
+   `useContractCase` (real stake amounts) + `get_protocol_config` (real
+   bps) and uses that for the transaction. The wizard's "Appeal Bond
+   Amount" input was replaced with a read-only protocol-computed estimate,
+   since the field was never sent to or checked by the contract in the
+   first place — it was pure decoration that happened to be wrong.
+2. **Appeal pipeline was a dead end after filing.** `file_appeal` was
+   wired, but the two steps required afterward —
+   `open_appeal_evidence_window` (APPEALED -> RE_INVESTIGATION, reopens
+   evidence submission) and `resolve_appeal` (the actual second/final
+   adjudication) — had no UI or `lib/genlayer.ts` methods at all. An
+   appeal, once filed, could never actually be resolved. Fixed: both added
+   to `lib/genlayer.ts` and to `CaseLifecycleActions.tsx`'s state machine
+   (APPEALED and RE_INVESTIGATION branches).
+3. **No cancellation path.** `cancel_case` (claimant-only, full refund,
+   before the respondent funds) had no UI. Added to the
+   `awaiting_respondent_stake` branch of `CaseLifecycleActions.tsx`,
+   visible only to the connected wallet matching the on-chain claimant.
+4. **No abandonment/timeout recovery path anywhere** — the contract's own
+   "funds can never be permanently stuck" guarantee
+   (`claim_case_abandonment`) had zero UI across every stage it applies to
+   (awaiting-respondent-stake, evidence-window/under-investigation,
+   appealed/re-investigation). Added as a secondary option alongside the
+   primary action at each relevant stage, gated client-side on the same
+   `deadline + 14-day grace period` check the contract itself enforces
+   (`ABANDONMENT_GRACE_SECONDS`), so the button only appears when it would
+   actually succeed on-chain.
+5. **Stale UI after successful on-chain transitions** — user reported
+   clicking "Signal Ready to Close Early" from both wallets and seeing no
+   change. Verified on-chain: it DID work (`evidence_deadline` collapsed
+   from Aug 28 to Aug 25, already in the past) — the UI just never
+   refetched to notice, since `useContractCase`/`useCase` were one-shot
+   fetches with no polling and the UI's "is the deadline in the past"
+   check only evaluates at render time. Fixed: both hooks now
+   `refetchInterval: 15_000`, so time-based transitions (deadline passing)
+   and the other party's on-chain actions surface within 15s without a
+   manual reload.
+6. **`get_metrics` (protocol-wide totals) was never exposed anywhere.**
+   Added `GET /genlayer/metrics` proxy route + `useProtocolMetrics` hook,
+   wired into the Dashboard as a small "Protocol Cases / Evidence /
+   Appeals / Volume" stat row alongside the user's own stats — confirmed
+   live returning real numbers (`case_count: 1, evidence_count: 7`, etc.).
+
+**Deliberately left unwired** (owner-only admin functions —
+`set_protocol_fee_bps`, `set_appeal_bond_bps`, `set_paused`,
+`transfer_ownership`, `set_treasury_address`, `sweep_treasury`,
+`propose_constitution_amendment`, `add_case_rule`): no admin panel exists
+in this app, and casually exposing owner-only contract calls to the
+regular case-detail UI would be a security-relevant scope decision, not a
+"missing wiring" bug — flagging here rather than adding silently.
+Similarly `get_case_rules` and `get_current_constitution_version` (views)
+weren't proxied — the off-chain DB already tracks case rules and
+constitution version adequately for display, so the on-chain view isn't
+load-bearing for the current UI, though it would be a straightforward
+addition if the constitution page ever needs to prove on-chain-vs-DB
+consistency.
