@@ -166,8 +166,79 @@ can't redirect to an internal one to bypass the check), and both a
 timeout (8s) and response-size cap (2MB) are enforced. Verified against a
 real public URL, `localhost`, and a cloud-metadata address before merging.
 
+## Second external audit round (re-audit, 2026-08-25) and fixes applied
+
+Score at re-audit: 3,300/4,000. Five findings, all addressed:
+
+1. **Hash truncation mismatch** — backend hashed up to 2MB of fetched
+   content while the contract truncated its fresh fetch to 1,200
+   *characters* before hashing, so any normal-sized page reported a false
+   mismatch. Fixed: both sides now truncate to the same canonical
+   **1,200-byte** bound before hashing (`EVIDENCE_HASH_TRUNCATION_BYTES` in
+   `safe-fetch.ts`, `EVIDENCE_CONTENT_BYTES` in `verdict_contract.py` — the
+   two constants must stay numerically equal).
+2. **SSRF guard vulnerable to DNS rebinding** — the original guard called
+   `dns.lookup()` to validate a hostname, then called `fetch()` separately,
+   which re-resolves DNS independently; a hostile DNS server could answer
+   the validation lookup with a public IP and the connection lookup with a
+   private one (classic TOCTOU). Fixed by rebuilding `safe-fetch.ts` on
+   Node's plain `http`/`https` `lookup` request option, so the same
+   function that resolves the hostname is the function that connects to
+   it. Two non-obvious runtime bugs were found and fixed while getting this
+   working (both reproduced with a real `https.request` against
+   `example.com`, not assumed from docs):
+   - Node's http(s) client invokes the `lookup` option internally with
+     `{ all: true }` and expects an *array* of `{address, family}` results
+     back in that case, not a single `(address, family)` pair — passing
+     the single-pair shape unconditionally threw
+     `ERR_INVALID_IP_ADDRESS: Invalid IP address: undefined` for every
+     request, including legitimate public URLs. `pinnedLookup` now
+     branches on `options.all`.
+   - When a URL's hostname is already a literal IP address, Node's
+     http(s) client skips the custom `lookup` option entirely (no
+     resolution needed) and connects directly — so `http://169.254.169.254/`
+     silently bypassed the whole guard. `fetchOnce` now runs the same
+     private/reserved-IP check directly against literal-IP hostnames
+     before ever calling `mod.request`.
+   Verified against `https://example.com` (succeeds), `127.0.0.1`, IPv6
+   `::1`/localhost, and `169.254.169.254` — all four reproduced with a real
+   Node process, not mocked.
+3. **Self-asserted on-chain evidence linkage** — `PATCH
+   /evidence/:id/link-contract` previously trusted whatever
+   `contractEvidenceId` the client sent, with no verification against the
+   contract; any authenticated submitter could link any id (their own
+   unrelated evidence, another case's evidence, or a non-existent id) and
+   the UI would show a misleading "on-chain" status. Fixed: the route now
+   reads the claimed id back from the contract via `get_evidence` and
+   cross-checks case id, submitter wallet address, evidence kind, and
+   content hash all match the DB row before persisting the link; a
+   mismatch returns 422 with the specific field(s) that failed.
+4. **SDK compatibility unproven** — backend pins `genlayer-js` at `1.1.8`,
+   frontend at `0.16.0`; this is a deliberate split (see
+   `docs/GENLAYER.md` "SDK version note"), each pinned to the exact version
+   already proven working in that specific role, rather than one version
+   untested in both. No further mechanical fix applies here without live
+   dual-role wallet testing.
+5. **No real GenVM validation** — the 19/19 passing unit tests
+   (`tests/contract/`) run against a stub `genlayer` module, not real
+   GenVM. Partially addressed with real (non-stubbed) verification: the
+   locally installed `genlayer` CLI (v0.39.2) was used to run
+   `genlayer schema <address>` and `genlayer call <address>
+   get_protocol_config` against the live deployed contract, confirming it
+   loads correctly on StudioNet and that `submit_evidence`'s parameter
+   list exactly matches `[case_id, kind, url, description, tx_reference,
+   content_hash]`. This CLI version has no `genvm-lint`/test subcommand
+   (checked `genlayer --help`: only `deploy/call/write/schema/code/receipt/
+   trace/appeal/...` exist) and a StudioNet end-to-end write-transaction
+   CI would require a funded wallet not available in this environment —
+   left as a known gap below.
+
 ## Known gaps / follow-up before real-value production use
 
+- [ ] `genvm-lint`-equivalent / direct validator tests with divergent
+      fetch/LLM mocks, and at least one recorded StudioNet end-to-end
+      write transaction in CI (needs a funded CI wallet — not available in
+      this environment).
 - [ ] Formal external audit of `contracts/verdict_contract.py` before any
       non-testnet deployment.
 - [ ] Automated dependency vulnerability scanning (`npm audit` / Dependabot)

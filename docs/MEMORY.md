@@ -574,3 +574,63 @@ signature changed, so it's wire-incompatible with the retired
 `0x5611...036DbD` address. User will redeploy themselves and provide the
 new address, per this project's original rule (contract deployment is
 always done by the user, never assumed or invented).
+
+## Second external audit round (re-audit, 2026-08-25) — new contract wired
+in, safe-fetch actually fixed, production redeployed
+
+User provided the redeployed v2 contract address
+`0x2be36DaF2FC169310dB7Cc2dAFBAa3Db410aA195` and asked to clear all
+cases/evidence from previous contracts, then pasted a re-audit scoring
+3,300/4,000 with 5 findings and said "fix them" — see
+`docs/SECURITY.md`'s "Second external audit round" section for the full
+per-finding detail. Summary of what actually happened:
+
+- Wired the new contract address into `backend/.env`,
+  `frontend/.env.local`, and the Fly.io `VERDICT_CONTRACT_ADDRESS` secret.
+  Verified it loads correctly via the real `genlayer` CLI (`genlayer
+  schema`, `genlayer call ... get_protocol_config`) — not assumed.
+- Ran `backend/src/db/clear_all_cases.ts` against production via `flyctl
+  ssh console`: deleted the 2 old-contract cases (VX-2939, VX-5379),
+  confirmed 0 cases remain.
+- Fixed the hash-truncation mismatch (backend/contract now both truncate
+  to the same 1,200-byte bound before hashing).
+- Fixed self-asserted evidence linkage: `PATCH
+  /evidence/:id/link-contract` now reads the claimed id back from the
+  contract and cross-checks case id/submitter/kind/content-hash before
+  persisting.
+- **The DNS-rebinding SSRF fix took two real debugging passes to actually
+  work, not just compile.** First attempt (undici `Agent` with a custom
+  `connect.lookup`) failed at runtime with `ERR_INVALID_IP_ADDRESS` even
+  for legitimate public URLs — abandoned rather than shipped broken.
+  Second attempt (plain Node `http`/`https` with a `lookup` request
+  option) hit the SAME error class initially, which proved the bug was in
+  my own lookup function, not the transport. Root-caused by writing an
+  isolated `node -e` reproduction against `https.request` directly (not
+  through the app), which showed Node was calling my lookup function with
+  `{ all: true, hints: 1024 }` and expecting an array-of-results callback
+  shape back — I was unconditionally calling back with a single
+  `(address, family)` pair, which Node's internal `emitLookup` then choked
+  on trying to read `results[0].address` off a string. Fixed by branching
+  on `options.all`. A SECOND distinct bug surfaced only after fixing the
+  first and testing the metadata-IP case: `169.254.169.254` was
+  "blocked" but only via an 8s connection timeout, not the intended
+  instant IP-range rejection — because Node's http client skips the
+  custom `lookup` option entirely when the hostname is already a literal
+  IP (no DNS resolution needed), so literal-IP URLs bypassed the guard
+  completely. Fixed with an explicit `isPrivateOrReservedIp` pre-check on
+  literal-IP hostnames before ever calling `mod.request`. Both fixes
+  verified against a real Node process (`example.com` succeeds instantly,
+  `127.0.0.1`/`::1`/`169.254.169.254` all rejected instantly with the
+  correct error message, not a timeout) before deploying.
+- Backend redeployed to Fly.io (`flyctl deploy`) with all of the above.
+- **Found an unrelated real bug while redeploying the frontend**: the
+  Vercel production env var `NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS` existed
+  but was set to an EMPTY STRING (`vercel env pull` confirmed
+  `=""`) — not the stale v1 address as expected, just blank. Removed and
+  re-added with the correct v2 address before deploying, otherwise the
+  live frontend would have shipped with no contract address at all.
+- Frontend deployed to Vercel production and aliased to
+  `ver-dict.vercel.app` (the required production URL for this project),
+  after getting explicit user confirmation first — `vercel --prod` is a
+  publish-to-shared-state action, and the auto-mode classifier correctly
+  blocked the first unconfirmed attempt.
