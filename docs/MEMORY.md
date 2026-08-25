@@ -252,3 +252,55 @@ Went through every route looking for dead buttons / unwired data:
   rendered, appeal filed) still don't create notifications yet, so the
   `notification_type` enum has entries with no producer; that's the next
   gap if this needs to feel fully alive.
+
+## More live-test bugs found and fixed (2026-08-25, continued)
+
+1. **`create_case` sent `required_stake_wei` as a JS string** —
+   `.toString()`'d before passing to genlayer-js's `writeContract` args.
+   genlayer-js maps a JS string arg to a Python `str` on the GenVM side;
+   the contract does `required_stake_wei >= int(self.min_stake_wei)`,
+   which raised `TypeError: '>=' not supported between 'str' and 'int'`.
+   Confirmed from a real failed StudioNet transaction's stderr traceback.
+   Fixed in `frontend/lib/genlayer.ts` — pass the bigint directly, never
+   stringify a numeric arg for a write call. **Lesson: every arg's JS type
+   must be checked against the contract's expected Python type before
+   calling writeContract — a passing TypeScript build says nothing about
+   this, since the args array is untyped (`unknown[]`) by design.**
+2. **"Fund Respondent Stake" button showed to the claimant, not just the
+   respondent** — the `awaiting_respondent_stake` card rendered
+   unconditionally for anyone viewing the case, so the claimant looking at
+   their own case saw a button meant for the other party (and got a wallet
+   rejection when they tried it, since they aren't `case.respondent`).
+   Fixed: gated on `address.toLowerCase() === c.respondentAddress.toLowerCase()`,
+   with a read-only "waiting on X" message for everyone else.
+3. **Case status stuck on `awaiting_respondent_stake` after the respondent
+   actually funded on-chain** — two compounding bugs, found by comparing
+   the live on-chain `get_case` (correctly `EVIDENCE_WINDOW`) against
+   Postgres (stuck):
+   - **Indexer off-by-one**: `backend/src/indexer/poll.ts`'s sync loop ran
+     `for (let id = 1; id <= count; id += 1)`, but case ids are 0-indexed
+     (`case_id = int(self.case_count)` *before* incrementing in the
+     contract) — so with one case existing (count=1), the loop checked
+     only id=1 (nonexistent, logged "Missing or invalid parameters" every
+     cycle) and never touched id=0, the real case. Fixed: loop
+     `0 <= id < count`.
+   - **`REDIS_URL` Fly secret was corrupted into a garbled two-URL
+     string** (`rediss://changeme_upstash_... rediss://default:...@...`) —
+     traced to `backend/.env` having two `REDIS_URL=` lines (the
+     `.env.example` placeholder content plus an appended real-value
+     override); `dotenv` silently keeps the *first* occurrence of a
+     duplicate key, so the placeholder always won locally, and the
+     `grep '^REDIS_URL='` used to extract the value for `flyctl secrets
+     set` matched and concatenated both lines. This meant the shared
+     rate-limiter was silently failing open on every request (logged
+     repeatedly, easy to miss). Rewrote `backend/.env` and
+     `frontend/.env.local` with each var appearing exactly once, and
+     reset the Fly secret with `flyctl secrets set REDIS_URL=<correct
+     value only>`. **Lesson: never build a local env file by
+     concatenating a template's full content with override lines appended
+     after — always replace in place, one variable, one line.**
+
+All three fixed and confirmed live: indexer logs show
+`[indexer] case 0: awaiting_respondent_stake -> evidence_window`,
+`GET /cases` shows VX-5379 as `evidence_window`, and no more Redis
+connection errors in the logs.
