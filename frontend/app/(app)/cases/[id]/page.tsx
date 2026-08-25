@@ -210,7 +210,12 @@ export default function CaseDetailsPage() {
           <Card>
             <CardHeader><CardTitle>Evidence Timeline</CardTitle></CardHeader>
             <CardContent>
-              <EvidenceTimeline evidence={evidence} />
+              <EvidenceTimeline
+                evidence={evidence}
+                caseId={c.id}
+                contractCaseId={c.contractCaseId}
+                canCommitOnChain={c.status === "evidence_window" || c.status === "re_investigation"}
+              />
             </CardContent>
           </Card>
 
