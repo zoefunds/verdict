@@ -85,7 +85,12 @@ export async function syncAllCases(): Promise<void> {
     return;
   }
 
-  for (let id = 1; id <= count; id += 1) {
+  // Case ids are 0-indexed (contracts/verdict_contract.py create_case:
+  // `case_id = int(self.case_count)` before incrementing), so valid ids
+  // run from 0 to count-1 inclusive — starting this loop at 1 skipped
+  // case 0 entirely and queried a nonexistent case at `count`, which is
+  // exactly the bug that left case 0 stuck showing stale status.
+  for (let id = 0; id < count; id += 1) {
     try {
       await syncOneCase(id);
     } catch (err) {
