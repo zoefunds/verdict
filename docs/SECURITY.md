@@ -63,10 +63,17 @@ economic value beyond StudioNet testnet GEN.
 
 ## Application security
 
-- **SSRF**: only the *contract's own* nondeterministic web-fetch (executed
-  inside GenVM, not the Node backend) fetches user-submitted URLs — the
-  Fastify backend itself never makes outbound requests to user-supplied
-  URLs, eliminating a whole SSRF class from the Node process.
+- **SSRF**: **updated 2026-08-25** — this used to say the Fastify backend
+  never makes outbound requests to user-supplied URLs at all. That's no
+  longer true: fixing the evidence content-hash commitment (see "External
+  audit findings" below) requires the backend to actually fetch submitted
+  URLs server-side to hash real content. This is now mitigated instead of
+  avoided — see `backend/src/lib/safe-fetch.ts` and the audit-findings
+  section below for the guard (private-IP/localhost/cloud-metadata
+  blocking, redirect re-validation, timeout, size cap). The contract's own
+  independent nondet web-fetch (inside GenVM) remains separate and
+  unchanged — it's what the verdict LLM actually evaluates against, not
+  this hashing fetch.
 - **Input validation**: all route bodies are parsed through `zod` schemas
   with explicit length caps before touching the database.
 - **SQL injection**: not applicable in the traditional sense — all queries
@@ -80,6 +87,84 @@ economic value beyond StudioNet testnet GEN.
   values (verified before every commit); production secrets are set via
   `flyctl secrets set` / Vercel's environment variable UI, never in
   `fly.toml` or repo files.
+
+## External audit findings (2026-08-25) and fixes applied
+
+An external review of the deployed contract, backend, and frontend found
+six real issues. All six were fixed in `contracts/verdict_contract.py` /
+`backend/src/routes/evidence.ts` / `frontend/lib/genlayer.ts` and required
+a **new contract deployment** (submit_evidence's signature changed — see
+`docs/GENLAYER.md` "Current status" for the superseded old address).
+
+1. **Verdict parsing silently accepted malformed LLM output as a valid
+   INCONCLUSIVE result** instead of forcing validator disagreement/
+   rotation. `_coerce_outcome` now raises `gl.vm.UserError(ERR_LLM + ...)`
+   on any unmappable output — which the existing `_handle_leader_error`/
+   `_verdicts_agree` error-classification scheme already treats as a
+   forced-disagreement class, so this was a targeted fix to one function,
+   not new machinery. INCONCLUSIVE remains a legitimate explicit outcome
+   the LLM can choose; what changed is that garbage no longer silently
+   becomes it.
+2. **Consensus tolerance was too wide for monetary settlement** — validators
+   could disagree by up to 1500 bps (15% of the pot) on a PARTIAL split and
+   still "agree". Added `SETTLEMENT_BANDS_BPS`, a fixed set of discrete
+   payout bands (10%/25%/40%/50%/60%/75%/90%) that every PARTIAL split is
+   snapped to before comparison, so independent LLM calls landing close
+   together collapse onto the identical value rather than merely falling
+   in a wide window. The raw tolerance backstop was also tightened
+   1500 -> 500 bps.
+3. **Unbounded nondeterministic input surface** — up to 40 URLs x 5000
+   chars could enter one prompt, with every validator independently
+   rendering mutable live pages (a consensus/liveness hazard). Tightened
+   to 15 evidence items x 1200 chars, and restructured the prompt into
+   explicit, bounded "witness record" blocks (source, retrieval status,
+   content-hash-match status) instead of an unstructured dump. A full
+   two-stage extraction pipeline (separate compact-summary LLM call per
+   source before the verdict call) was considered and NOT implemented —
+   it doubles nondet LLM calls, a real cost/latency/consensus-surface
+   trade-off that deserves its own explicit decision, documented as a
+   follow-up rather than silently half-done.
+4. **Evidence fetch outcome was recorded as a blanket success** —
+   `_mark_evidence_independently_fetched` set `fetch_succeeded = True` for
+   every URL after any verdict, regardless of whether that item's fetch
+   actually succeeded, misrepresenting provenance. Now threads the
+   leader's real per-item fetch/hash result through
+   `_run_verdict_judgment`'s returned dict and records it faithfully
+   (including a new `content_hash_matched` field).
+5. **URL evidence's "on-chain content-hash commitment" was not real** —
+   the backend hashed the URL STRING, the contract had no hash field at
+   all, and the frontend never sent one. A tampered page and an untampered
+   page at the same URL produced the identical "commitment". Fixed
+   end-to-end: `submit_evidence` gained a required `content_hash`
+   parameter (64-char hex sha256, format-checked on-chain); the backend
+   now actually fetches the URL server-side (`lib/safe-fetch.ts`, SSRF-
+   guarded — see below) and hashes the real response body; the frontend
+   sends that real hash on every submission. The contract's verdict-time
+   independent re-fetch now compares its own hash against the committed
+   one and surfaces a match/mismatch signal to the LLM explicitly (not an
+   automatic tamper verdict, since a live page is allowed to legitimately
+   change).
+6. **Deployment/documentation contradictions and split SDK versions** —
+   `docs/GENLAYER.md` said "not yet deployed" while a real address was
+   live and in active use elsewhere; `genlayer-js` had drifted to
+   different major versions between frontend (`0.16.0`) and backend
+   (`1.1.8`) with no record either was actually verified. Fixed the docs
+   contradiction; pinned both to their exact already-proven-working
+   version rather than guessing a unified version works for both (see
+   `docs/GENLAYER.md` "SDK version note" for the reasoning).
+
+**New SSRF surface introduced by fix #5, and its mitigation:** hashing
+real URL content server-side means the backend now makes outbound HTTP
+requests to user-submitted URLs for the first time (previously this was
+avoided entirely — see the updated SSRF bullet above).
+`backend/src/lib/safe-fetch.ts` mitigates this: http(s)-only, resolves the
+hostname and rejects any private/loopback/link-local/reserved address
+(blocks `localhost`, cloud metadata endpoints like `169.254.169.254`,
+internal `10.x`/`172.16.x`/`192.168.x` ranges), each redirect hop is
+re-validated against the same checks (capped at 3 hops, so a public URL
+can't redirect to an internal one to bypass the check), and both a
+timeout (8s) and response-size cap (2MB) are enforced. Verified against a
+real public URL, `localhost`, and a cloud-metadata address before merging.
 
 ## Known gaps / follow-up before real-value production use
 

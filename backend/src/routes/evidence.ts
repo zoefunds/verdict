@@ -8,6 +8,14 @@
  * hashes — a mismatch is a tamper signal, not something this API silently
  * resolves. This route only stores content and computes the hash; it does
  * NOT decide evidence is "verified" — only the contract can.
+ *
+ * AUDIT FIX (external review, 2026-08-25): URL evidence previously hashed
+ * the URL STRING itself, not the page content it points to — meaning the
+ * "on-chain content-hash commitment" claim was false; the hash committed
+ * couldn't detect any tampering at all, since a tampered page and an
+ * untampered page produce the exact same hash of their shared URL. Fixed
+ * by actually fetching the URL server-side (see lib/safe-fetch.ts for the
+ * SSRF-guarded fetch) and hashing the real response body.
  */
 
 import type { FastifyPluginAsync } from "fastify";
@@ -18,6 +26,7 @@ import { evidence, caseParticipants } from "../db/schema.js";
 import { and, eq } from "drizzle-orm";
 import { saveEvidenceFile } from "../storage/files.js";
 import { env } from "../lib/env.js";
+import { safeFetchText, UnsafeUrlError } from "../lib/safe-fetch.js";
 
 const TextEvidenceBody = z.object({
   caseId: z.string().uuid(),
@@ -50,11 +59,25 @@ export const evidenceRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(403).send({ error: (err as Error).message });
     }
 
-    const hashInput = body.sourceUrl ?? body.textContent ?? "";
-    if (!hashInput) {
+    if (!body.sourceUrl && !body.textContent) {
       return reply.code(400).send({ error: "Provide sourceUrl or textContent" });
     }
-    const contentHashSha256 = createHash("sha256").update(hashInput, "utf8").digest("hex");
+
+    let contentHashSha256: string;
+    if (body.evidenceType === "url" && body.sourceUrl) {
+      // Hash the ACTUAL fetched page content, not the URL string — see
+      // the module-level AUDIT FIX comment above.
+      let fetchedText: string;
+      try {
+        fetchedText = await safeFetchText(body.sourceUrl);
+      } catch (err) {
+        const message = err instanceof UnsafeUrlError ? err.message : "Failed to fetch URL for content hashing";
+        return reply.code(422).send({ error: `Could not verify this URL's content: ${message}` });
+      }
+      contentHashSha256 = createHash("sha256").update(fetchedText, "utf8").digest("hex");
+    } else {
+      contentHashSha256 = createHash("sha256").update(body.textContent ?? "", "utf8").digest("hex");
+    }
 
     const [created] = await db
       .insert(evidence)

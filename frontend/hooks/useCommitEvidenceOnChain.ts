@@ -41,6 +41,7 @@ export function useCommitEvidenceOnChain() {
         account,
         contractCaseId,
         kind,
+        contentHash: item.contentHashSha256,
         url: item.sourceUrl ?? undefined,
         description: onChainDescription,
         txReference:

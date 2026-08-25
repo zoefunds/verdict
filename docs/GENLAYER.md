@@ -57,7 +57,36 @@ methods is the reliable sync mechanism for this execution model.
 
 ## Current status
 
-Contract is written and reviewed; **not yet deployed**. Once you deploy it
-to StudioNet and provide the resulting address, we wire it into the
-backend indexer and frontend client (`frontend/lib/genlayer.ts`) and verify
-end-to-end reads/writes — see `docs/DEPLOYMENT.md`.
+**Superseded deployment (retired):** `0x56118ae3ee66b662a9a4CEf3424008c1D1036DbD`
+was deployed and exercised end-to-end on StudioNet — real case creation,
+respondent funding, evidence submission, a real GenLayer-rendered verdict,
+a real appeal, and appeal-evidence resubmission all confirmed working
+against it. That address is now **superseded** following an external
+audit (2026-08-25) that required contract-level fixes (see
+`docs/SECURITY.md` "External audit findings") — most importantly, adding
+a `content_hash` parameter to `submit_evidence` that the old contract
+never had, so the old and new contracts are not wire-compatible. Any case
+data on the old address is a retired test artifact only.
+
+**Awaiting redeployment of the fixed contract.** Once you deploy the
+current `contracts/verdict_contract.py` to StudioNet and provide the
+resulting address, it gets wired into the backend indexer and frontend
+client (`frontend/lib/genlayer.ts`) and re-verified end-to-end — see
+`docs/DEPLOYMENT.md`.
+
+### SDK version note
+
+`frontend/package.json` pins `genlayer-js` to exact `0.16.0`;
+`backend/package.json` pins it to exact `1.1.8` — deliberately NOT the
+same version. This was a real gap an external audit caught: the two had
+drifted to different major versions with no record of either being
+actually verified. Rather than guess that unifying them to one version
+works equally well for both wallet-signed writes (frontend) and
+server-side reads (backend) without being able to test the wallet-signing
+path directly, each is pinned to the exact version already confirmed
+working for its actual role: 0.16.0 is what every real transaction listed
+above went through on the frontend; 1.1.8 is what the backend's read
+proxy (`/genlayer/*` routes) has been serving from since deployment. If
+you want to unify on one version, treat it as a deliberate upgrade that
+needs the same live-transaction re-verification this pinning documents,
+not a routine dependency bump.

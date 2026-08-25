@@ -90,6 +90,10 @@ export function EvidenceSubmitForm({
         account: address,
         contractCaseId: Number(contractCaseId),
         kind: contractKind,
+        // The backend computed this from the ACTUAL content (fetched page
+        // body for URL kind, not the URL string — see backend/src/routes
+        // /evidence.ts) — this is the real on-chain content-hash commitment.
+        contentHash: created.contentHashSha256,
         url: kind === "url" ? sourceUrl : undefined,
         description: onChainDescription,
         txReference:

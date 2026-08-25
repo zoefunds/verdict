@@ -522,3 +522,55 @@ was already flagged in the original rate-limiting design notes
 backoff at scale, and remains true after this audit. Not addressed now
 since it's out of scope for "is anything ACTUALLY stale right now" at the
 app's current real usage level.
+
+## External audit + contract v2 (2026-08-25, continued)
+
+User ran (or received) a rigorous external audit of the contract,
+backend, and frontend, citing exact line numbers and docs.genlayer.com
+references. Every one of the 6 findings checked out against the actual
+code. Full detail in `docs/SECURITY.md` "External audit findings" and
+`contracts/README.md` "v2 — external audit fixes"; short version:
+
+1. `_coerce_outcome` now raises `ERR_LLM` on unmappable LLM output instead
+   of silently defaulting to INCONCLUSIVE (was accepting malformed/
+   hallucinated output as a settlement-ready refund).
+2. Added `SETTLEMENT_BANDS_BPS` — PARTIAL splits snap to one of 7 discrete
+   bands before leader/validator comparison; raw tolerance tightened
+   1500 -> 500 bps as a backstop only.
+3. `MAX_EVIDENCE_PER_CASE` 40 -> 15, `MAX_EVIDENCE_FETCH_CHARS` 5000 ->
+   1200; prompt restructured into explicit bounded "witness record"
+   blocks. A full two-stage extraction pipeline was considered and
+   explicitly NOT implemented (doubles nondet LLM calls) — documented as
+   a follow-up, not silently half-done.
+4. `_mark_evidence_independently_fetched` now threads the leader's real
+   per-item fetch/hash result through instead of blanket
+   `fetch_succeeded = True`.
+5. **Biggest fix**: `submit_evidence` gained a required `content_hash`
+   param (contract had none before); the backend
+   (`backend/src/lib/safe-fetch.ts`) now actually fetches URL evidence
+   server-side (SSRF-guarded — smoke-tested against a real URL,
+   localhost, and a cloud-metadata address, all behaving correctly) and
+   hashes the real body, instead of hashing the URL string as before. The
+   contract's verdict-time re-fetch now compares its own hash against the
+   commitment and surfaces match/mismatch to the LLM as a signal, not an
+   automatic verdict.
+6. Fixed `docs/GENLAYER.md`'s stale "not yet deployed" claim (a real
+   address had been live and used for hours). Pinned `genlayer-js` to
+   different EXACT versions per package (frontend `0.16.0`, backend
+   `1.1.8`) rather than guessing a unified version works for both without
+   being able to test the wallet-signing path myself — each is what's
+   actually proven working in its own role right now.
+
+Added `tests/contract/` — 19 unit tests for the deterministic parsing/
+banding/equivalence logic (via a minimal `genlayer` stub, not a GenVM
+emulator), all passing, directly regression-testing fixes #1 and #2.
+Honestly scoped in `tests/contract/README.md`: nondet/escrow/payout paths
+still need the real GenLayer CLI (`genvm-lint`, `genlayer test`), not
+installed in this environment — that gap is only partially closed, not
+pretended to be fully closed.
+
+**This is a new contract needing redeployment** — `submit_evidence`'s
+signature changed, so it's wire-incompatible with the retired
+`0x5611...036DbD` address. User will redeploy themselves and provide the
+new address, per this project's original rule (contract deployment is
+always done by the user, never assumed or invented).

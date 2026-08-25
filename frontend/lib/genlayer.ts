@@ -140,15 +140,25 @@ export const genlayerContract = {
 
   /**
    * Maps to `submit_evidence(case_id, kind, url, description,
-   * tx_reference)`. Not payable. The contract only accepts this while the
-   * case is in EVIDENCE_WINDOW or RE_INVESTIGATION status — calling it
-   * outside that window reverts. `kind` must be one of URL / TEXT_STATEMENT
-   * / TX_RECORD / DOCUMENT_HASH.
+   * tx_reference, content_hash)`. Not payable. The contract only accepts
+   * this while the case is in EVIDENCE_WINDOW or RE_INVESTIGATION status —
+   * calling it outside that window reverts. `kind` must be one of URL /
+   * TEXT_STATEMENT / TX_RECORD / DOCUMENT_HASH.
+   *
+   * `contentHash` is REQUIRED (audit finding, external review 2026-08-25:
+   * the contract previously had no hash field at all, so the "on-chain
+   * content-hash commitment" the docs claimed was never actually true —
+   * this parameter and the contract's format check on it exist so that
+   * claim is real). Must be the lowercase hex sha256 the backend computed
+   * from the evidence's actual content at submission time — for URL kind
+   * that's the fetched page body (`evidenceApi.submitText` fetches it
+   * server-side), never the URL string itself.
    */
   async submitEvidenceOnChain(args: {
     account: `0x${string}`;
     contractCaseId: number;
     kind: "URL" | "TEXT_STATEMENT" | "TX_RECORD" | "DOCUMENT_HASH";
+    contentHash: string;
     url?: string;
     description?: string;
     txReference?: string;
@@ -159,6 +169,7 @@ export const genlayerContract = {
       args.url ?? "",
       args.description ?? "",
       args.txReference ?? "",
+      args.contentHash,
     ]);
   },
 

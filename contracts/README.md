@@ -12,6 +12,25 @@ stake, and partial verdicts split proportionally. Either party may appeal
 once, within a 7-day window, by posting an appeal bond; the second verdict is
 final.
 
+## v2 — external audit fixes (2026-08-25)
+
+This is a **new contract version**, not compatible with the previously
+deployed address (`0x56118ae3ee66b662a9a4CEf3424008c1D1036DbD`, now
+retired — see `docs/GENLAYER.md`). An external audit found six real
+issues, detailed in full in `docs/SECURITY.md` "External audit findings".
+The change that affects the deploy/integration surface:
+
+**`submit_evidence` gained a required 6th parameter, `content_hash`** (hex
+sha256 of the evidence's actual content — for URLs, the fetched page
+body, never the URL string). The constructor's signature is **unchanged**
+— the deploy command below is the same as before.
+
+The other five fixes (stricter verdict-output validation, discrete
+settlement bands instead of a wide raw tolerance, a bounded/structured
+evidence prompt, real per-item fetch-result recording instead of a
+blanket marker, and this content-hash commitment) are internal logic
+changes with no effect on the deploy command or constructor args.
+
 ## Contents
 
 - [Section-by-section overview](#section-by-section-overview)
