@@ -424,3 +424,55 @@ constitution version adequately for display, so the on-chain view isn't
 load-bearing for the current UI, though it would be a straightforward
 addition if the constitution page ever needs to prove on-chain-vs-DB
 consistency.
+
+## First real appeal + two more evidence bugs found (2026-08-25, continued)
+
+Verdict actually rendered for VX-5379 for real: `PARTIAL`, 75/25 split,
+55% confidence, full structured reasoning citing the specific evidence
+(404 staging URL, unverifiable milestone doc, respondent's own admission
+of 3/5 pages) — confirms the whole adjudication pipeline works
+end-to-end, including GenLayer's real LLM+web-fetch evaluation.
+
+User then filed a real appeal (respondent, citing the CMS provider outage
+as a third-party delay under Article 4) — confirmed on-chain: status
+`APPEALED`, `appeal_used: true`, 24 GEN bond correctly computed and
+locked (validating the appeal-bond fix from the previous audit pass).
+
+Then hit two more real bugs trying to submit appeal evidence, found by
+reading the failed transaction directly on
+explorer-studio.genlayer.com/tx/... :
+
+1. **Text-statement evidence content was silently dropped on-chain.** The
+   error message showed decoded params with an empty `description` field.
+   Root cause: `EvidenceSubmitForm`'s on-chain commit sent the optional
+   "Description" field as the contract's `description` argument, but
+   never sent `textContent` — the actual text the user typed into
+   "Content" for `text_statement` kind. The contract has no separate
+   content parameter; `description` IS the content slot. Fixed in both
+   `EvidenceSubmitForm.tsx` and `useCommitEvidenceOnChain.ts` (the
+   retroactive-commit hook had the identical bug) — now sends
+   `textContent` (plus any optional description, joined) as the on-chain
+   description, capped at 2000 chars to match the contract's
+   `MAX_EVIDENCE_DESCRIPTION_LEN` (previously would have reverted on
+   anything longer, since off-chain allows up to 20000 chars).
+2. **Appeal-evidence form always attempted on-chain submission,
+   regardless of case status.** The actual failure the user hit:
+   `[EXPECTED] case is not currently accepting evidence` — the contract
+   only accepts `submit_evidence` during `EVIDENCE_WINDOW` or
+   `RE_INVESTIGATION`, but the case was still `APPEALED` (appeal filed,
+   but "Open Appeal Evidence Window" not yet clicked). The main case
+   detail page already gated the whole evidence form's visibility
+   correctly; the appeal page never did. Added a `canCommitOnChain` prop
+   to `EvidenceSubmitForm` (defaults `true` for back-compat) and wired the
+   appeal page to pass `c.status === "re_investigation"` — off-chain save
+   still always happens, but the on-chain step is skipped with an honest
+   inline message instead of attempting (and reverting) a doomed
+   transaction.
+
+**Lesson reinforced again**: every on-chain write's argument mapping needs
+to be checked field-by-field against what the contract actually reads
+from each parameter, not just "does it compile" — this is the third
+distinct on-chain argument-mapping bug found this way (after the
+stringified `required_stake_wei` and the ignored per-case appeal-bond
+field), all three only surfaced by reading a real failed StudioNet
+transaction's decoded params/stderr, not from code review alone.
