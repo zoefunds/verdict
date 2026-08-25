@@ -304,3 +304,45 @@ All three fixed and confirmed live: indexer logs show
 `[indexer] case 0: awaiting_respondent_stake -> evidence_window`,
 `GET /cases` shows VX-5379 as `evidence_window`, and no more Redis
 connection errors in the logs.
+
+## Evidence + adjudication pipeline wired for real (2026-08-25, continued)
+
+User correctly flagged two more gaps: evidence submission never went
+on-chain, and there was no way to trigger adjudication at all.
+
+- **Evidence on-chain commit**: `EvidenceSubmitForm` previously only ever
+  called the off-chain `/evidence/text` or `/evidence/file` backend
+  routes. Now, after the off-chain save succeeds (so nothing is lost even
+  if the wallet step fails), it calls `genlayerContract.submitEvidenceOnChain`
+  (wallet-signed `submit_evidence` write), then reads
+  `get_case_evidence_ids(case_id)` via a new proxy route
+  (`GET /genlayer/case/:caseId/evidence-ids`) to learn the new on-chain
+  evidence id (ids are appended in order, so the last element after the
+  tx confirms is the new one — same pattern as the case-count trick), and
+  finally calls a new `PATCH /evidence/:id/link-contract` to record it.
+  Maps DB `evidenceType` -> contract `kind` (URL/TEXT_STATEMENT/TX_RECORD/
+  DOCUMENT_HASH); file uploads use the SHA-256 hash as `tx_reference`.
+- **Adjudication pipeline had no UI at all** — the contract's own design
+  splits this into four explicit steps (kept deterministic/nondeterministic
+  concerns apart, see contracts/verdict_contract.py section 5.7 comments):
+  `close_evidence_window_early` (optional, both-parties-ready fast path) ->
+  `request_investigation` (deterministic state move, requires evidence
+  deadline passed) -> `render_verdict` (the actual nondet LLM+web-fetch
+  adjudication — this is what "request adjudication" means concretely) ->
+  `settle_case` (payout, auto-transitions APPEAL_WINDOW -> FINAL if the
+  appeal deadline already passed). Added
+  `frontend/components/case/CaseLifecycleActions.tsx`, shown on the case
+  detail page, which reads on-chain `evidence_deadline`/`appeal_deadline`
+  from `useContractCase` to decide which single action is currently valid
+  and shows exactly that one button with an explanation — never multiple
+  contradictory actions at once.
+- Added `closeEvidenceWindowEarly` and `renderVerdict` to
+  `frontend/lib/genlayer.ts` (were missing entirely; `requestInvestigation`
+  and `settleCase` already existed from the initial contract wiring).
+
+Not yet done: automatically re-fetching `onChainCase` on a fixed interval
+while a party is looking at a case stuck waiting on the *other* party's
+action (e.g. respondent hasn't funded yet) — currently only refetches on
+explicit user actions/query invalidation, so a second browser tab won't
+see the other party's on-chain action until it's refreshed or its own
+`useContractCase`/`useCase` queries next run.
