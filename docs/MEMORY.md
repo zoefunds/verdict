@@ -692,3 +692,35 @@ Re-audit score 3,250/4,000, three findings. What actually happened:
   open gap in `docs/SECURITY.md`, not silently dropped or claimed closed:
   this specific gap is one provider API key away from resolvable, not a
   tooling dead end.
+
+## v3 contract deployed — `0xD570c9bA2B68b10d0c86EDD9Fc5B384c9ecD7185`
+
+User redeployed with the byte-truncation fix included and gave the new
+address. Wired into `backend/.env`, `frontend/.env.local`, the Fly.io
+`VERDICT_CONTRACT_ADDRESS` secret, and the Vercel prod env var. Verified
+against real chain state before trusting it: `genlayer schema` confirms
+`submit_evidence`'s 6-param signature matches source exactly, `genlayer
+call get_protocol_config` returns live config, `get_case_count` returns
+`0` (clean deploy, nothing to clear this round).
+
+**Caught the Vercel env-add bug happening a THIRD time and finally root-
+caused it**: `vercel env pull` shows every single `NEXT_PUBLIC_*` var as
+an empty string in this project, including ones known to be live and
+working (API_BASE_URL, APP_ENV) — this is `env pull` masking/not
+resolving values in this CLI context, not the underlying secret actually
+being empty. The previous session's "found it empty, fixed it" diagnosis
+for v2 may itself have been a false alarm from this same CLI quirk
+(harmless either way, since re-setting to the correct value is a no-op if
+it was already correct). **Lesson: never trust `vercel env pull` to
+verify a `NEXT_PUBLIC_` value in this project — verify by grepping the
+actual built/served JS bundle instead.** Did exactly that this time:
+rebuilt the frontend locally against `.env.local`, grepped the resulting
+`.next` client chunks for the new address (found in `layout` and
+`casebook/page`, old address absent anywhere), then re-confirmed by
+fetching the actual live chunks from `ver-dict.vercel.app` after
+deploying and aliasing — both real, both automated, neither assumed.
+
+Deployed frontend to Vercel prod and aliased to `ver-dict.vercel.app`
+after explicit user confirmation (blocked once by the auto-mode
+classifier first, same as the v2 round — expected behavior for a
+publish-to-shared-state action, not a bug).

@@ -68,30 +68,31 @@ a `content_hash` parameter to `submit_evidence` that the old contract
 never had, so the old and new contracts are not wire-compatible. Any case
 data on the old address is a retired test artifact only.
 
-**v2 deployed and wired in:** `0x2be36DaF2FC169310dB7Cc2dAFBAa3Db410aA195`
-is the current production contract, wired into the Fly.io backend
-(`VERDICT_CONTRACT_ADDRESS`), the indexer, and the Vercel frontend
-(`NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS`). Verified against real StudioNet
-state via the `genlayer` CLI: `genlayer schema 0x2be36...` confirms the
-contract loads and `submit_evidence`'s parameter list matches
-`[case_id, kind, url, description, tx_reference, content_hash]`, and
-`genlayer call 0x2be36... get_protocol_config` returns live config —
-both checked against the actual deployed bytecode, not assumed from
-source. All test cases from the retired v1 address
-(`0x5611...036DbD`) were cleared from the production database rather than
-carried forward, since they predate the `content_hash` API and can't be
-replayed against v2.
+**Superseded deployment (retired):** `0x2be36DaF2FC169310dB7Cc2dAFBAa3Db410aA195`
+("v2") was deployed, wired in, and CLI-verified — but its source predates
+the byte-truncation hash-canonicalization fix from the second audit round
+(see `docs/SECURITY.md` "Second external audit round", finding #1), which
+was lost to an external file-sync revert and only reapplied after v2 was
+already live. Retired in favor of v3 below rather than left mismatched
+with checked-in source.
 
-**Re-audit note (2026-08-25):** the contract source changed again after
-v2 was deployed — a canonical byte-truncation fix for evidence hashing
-(see `docs/SECURITY.md` "Second external audit round", finding #1) was
-lost to an external file-sync revert and has now been reapplied. **This
-means the currently checked-in `contracts/verdict_contract.py` no longer
-matches the bytecode at `0x2be36...` exactly** — the deployed contract
-still has the character-truncation bug this fix addresses. A fresh
-redeployment (by you, per this project's standing rule that contract
-deployment is never done by Claude) is needed before the hash-comparison
-fix is live, not just committed.
+**v3 deployed and wired in:** `0xD570c9bA2B68b10d0c86EDD9Fc5B384c9ecD7185`
+is the current production contract, wired into the Fly.io backend
+(`VERDICT_CONTRACT_ADDRESS` secret), the indexer, and the Vercel frontend
+(`NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS`). Verified against real StudioNet
+state via the `genlayer` CLI (not assumed from source): `genlayer schema
+0xD570c9...` confirms the contract loads and `submit_evidence`'s
+parameter list matches `[case_id, kind, url, description, tx_reference,
+content_hash]`, `genlayer call 0xD570c9... get_protocol_config` returns
+live config, and `get_case_count` returns `0` (fresh deployment, no case
+data to carry forward or clear this time). The frontend deployment was
+verified by locally rebuilding with the matching `.env.local` and
+grepping the actual `.next` client bundle for the new address (found in
+`layout` and `casebook/page` chunks, old address absent), then confirming
+the same address appears in the live served bundle at
+`ver-dict.vercel.app` — not just assumed from the env var being set,
+since a prior round's Vercel env var silently held an empty string
+despite `vercel env add` reporting success.
 
 ### SDK version note
 
