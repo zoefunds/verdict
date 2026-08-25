@@ -35,6 +35,10 @@ export function useMyCases() {
     queryKey: ["cases", "mine"],
     queryFn: () => casesApi.list({ mine: true }),
     enabled: isAuthenticated,
+    // The dashboard is exactly where a user watches for "did the other
+    // party act yet" across all their cases — poll so a status change
+    // (funded, verdict rendered, etc.) shows up without a manual reload.
+    refetchInterval: 20_000,
   });
 }
 
@@ -56,6 +60,10 @@ export function useCaseEvidence(caseId: string | undefined) {
     queryKey: ["evidence", caseId],
     queryFn: () => evidenceApi.listForCase(caseId as string),
     enabled: Boolean(caseId),
+    // The other party's evidence submissions land here with no wallet
+    // action on this user's end at all — poll so a case page open while
+    // the other side is actively submitting evidence updates live.
+    refetchInterval: 15_000,
   });
 }
 
@@ -63,6 +71,10 @@ export function useCasebook(params: { category?: string; sort?: "recent" | "high
   return useQuery({
     queryKey: ["casebook", params],
     queryFn: () => casebookApi.list(params),
+    // Lower urgency than an open case (nothing here is time-sensitive to
+    // a specific user), but still shouldn't require a manual reload to
+    // see a newly-settled case appear.
+    refetchInterval: 30_000,
   });
 }
 
@@ -87,5 +99,6 @@ export function useProtocolMetrics() {
     queryKey: ["protocol-metrics"],
     queryFn: () => fetchProtocolMetrics(env.apiBaseUrl),
     enabled: isContractDeployed,
+    refetchInterval: 30_000,
   });
 }

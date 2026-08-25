@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useAccount } from "wagmi";
 import { useQueryClient } from "@tanstack/react-query";
@@ -52,6 +52,22 @@ export function CaseLifecycleActions({
   const queryClient = useQueryClient();
   const { state, run } = useTransaction();
   const [busyAction, setBusyAction] = useState<string | null>(null);
+
+  // Which action is valid here is gated on wall-clock deadlines (evidence
+  // window closing, appeal window closing, abandonment grace period). A
+  // deadline can pass with ZERO on-chain state change — nobody has to
+  // submit a transaction for time to elapse. React Query's structural
+  // sharing means the query result reference stays IDENTICAL across polls
+  // when the fetched data is unchanged, which means no re-render happens
+  // on its own even with refetchInterval running — so without this tick,
+  // a case sitting open in a background tab would never flip from
+  // "window still open" to "action now available" until something else
+  // (navigation, an unrelated state change) happened to force a render.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => forceTick((n) => n + 1), 20_000);
+    return () => clearInterval(id);
+  }, []);
 
   const isClaimantWallet = Boolean(
     address && onChainCase && String(onChainCase.claimant ?? "").toLowerCase() === address.toLowerCase(),
