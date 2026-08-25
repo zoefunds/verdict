@@ -12,6 +12,7 @@
     "indexer:start": "node dist/indexer/run.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
+    "db:seed": "tsx src/db/seed.ts",
     "db:studio": "drizzle-kit studio",
     "test": "vitest run",
     "lint": "eslint src --ext .ts"
