@@ -634,3 +634,61 @@ per-finding detail. Summary of what actually happened:
   after getting explicit user confirmation first — `vercel --prod` is a
   publish-to-shared-state action, and the auto-mode classifier correctly
   blocked the first unconfirmed attempt.
+
+## Third external audit pass (re-audit of the re-audit, 2026-08-25) —
+caught a silent regression, closed the render-vs-raw gap honestly
+
+Re-audit score 3,250/4,000, three findings. What actually happened:
+
+- **The single biggest finding was self-inflicted and worth remembering**:
+  `contracts/verdict_contract.py`'s byte-truncation fix from the PREVIOUS
+  round had been silently reverted — back to character-truncation, with
+  `_hash_matches_submission` and the old 2-tuple `_fetch_evidence_
+  independently` restored — by the time this audit ran. This is the same
+  external file-sync-stripping-changes behavior (almost certainly GenLayer
+  Studio) noted earlier in this doc for the module header comment, but
+  this time it silently reverted actual logic, not just a comment block.
+  **Lesson: after any edit to `verdict_contract.py`, re-diff or re-run
+  `pytest tests/contract/` before trusting the file reflects what was
+  last written — do not assume an edit made minutes ago is still there.**
+  Re-applied the byte-truncation fix (`EVIDENCE_CONTENT_BYTES = 1200`,
+  hashing the same truncated UTF-8 byte buffer that's displayed) and
+  verified immediately with the 19-test suite, not just by re-reading the
+  diff.
+- Also fixed the OTHER half of finding #1, which was real and not just a
+  regression: the backend hashed raw HTTP response bodies while the
+  contract's fetch goes through `gl.nondet.web.render(..., mode="text")`
+  — a rendered-text view. Added `extractVisibleText` to
+  `backend/src/lib/safe-fetch.ts` (strips script/style/noscript blocks and
+  remaining tags, decodes entities, collapses whitespace) so HTML
+  responses are hashed as approximate visible text instead of raw markup.
+  Explicitly documented as a narrowing, not a claimed fix: a hand-rolled
+  tag-stripper can't be proven byte-identical to GenVM's actual renderer
+  for JS-driven content, and GenVM exposes no raw-fetch primitive to
+  match against instead — this is why the contract has always treated
+  (and still treats) a hash mismatch as a signal for the verdict LLM to
+  weigh, never automatic proof of tampering.
+- Fixed a real doc-drift bug caught while addressing finding #2:
+  `docs/GENLAYER.md` still said "awaiting redeployment" even though the
+  v2 contract (`0x2be36...`) had already been deployed, wired in, and
+  CLI-verified in the previous round. Updated it, and — since the
+  byte-truncation fix above changed contract source AGAIN after that
+  deployment — added an explicit note that the currently-deployed
+  bytecode no longer matches checked-in source and needs a fresh
+  redeploy (by the user, never by Claude, per this project's standing
+  rule) before the hash fix is actually live on-chain.
+- Attempted to close finding #3 (no real GenVM validation) with something
+  more real than another stub-test claim: `genlayer up`/`genlayer init`
+  has a local multi-validator GenVM simulator mode in Docker, which
+  doesn't need a funded StudioNet wallet. Docker was confirmed available
+  and `genlayer init --numValidators 3` was actually run (twice — first
+  attempt with `yes | ...` piped into the interactive prompt corrupted
+  the TUI's terminal control codes into a 4.6MB garbage log, fixed by
+  piping a single `y` instead). It reached a second interactive step
+  requiring a real LLM provider API key (OpenAI/Heurist/Gemini/XAI) for
+  the validators' own `gl.nondet.exec_prompt` calls — no such key exists
+  anywhere in this project's environment, and none was fabricated or
+  requested just to force the init through. Documented as a genuinely
+  open gap in `docs/SECURITY.md`, not silently dropped or claimed closed:
+  this specific gap is one provider API key away from resolvable, not a
+  tooling dead end.

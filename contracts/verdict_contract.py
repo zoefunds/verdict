@@ -77,7 +77,16 @@ MAX_REASONING_STORED = 2000
 # explicit "witness record" prompt structure (see _build_verdict_prompt)
 # so what IS included is clearly attributed and bounded, even though
 # extraction still happens in the same single verdict call.
-MAX_EVIDENCE_FETCH_CHARS = 1200       # chars of fetched page text fed to the LLM, per source
+# Canonical BYTE bound applied to fetched page content before it is either
+# hashed or fed to the LLM. AUDIT FIX (re-audit, 2026-08-25): this was
+# previously a CHARACTER slice (`text[:1200]`) applied before UTF-8
+# encoding, while the backend truncated raw bytes — any non-ASCII content
+# could truncate at a different point on each side and produce a different
+# hash for identical content. Both sides now truncate the same UTF-8 BYTE
+# buffer to the same bound before either hashing or display. MUST stay
+# numerically equal to EVIDENCE_HASH_TRUNCATION_BYTES in
+# backend/src/lib/safe-fetch.ts.
+EVIDENCE_CONTENT_BYTES = 1200
 MAX_EVIDENCE_PER_CASE = 15
 MAX_EVENTS_PER_CASE = 200
 
@@ -964,6 +973,17 @@ class Verdict(gl.Contract):
         tampering (edited/deleted pages) is detected rather than trusting
         a stale, participant-controlled snapshot.
 
+        Returns (fetch_ok, display_text, content_hash) — content_hash is
+        sha256 of the EXACT same canonical byte-truncated buffer that
+        display_text was decoded from, so it can be compared directly
+        against Evidence.content_hash (committed at submission time from
+        backend/src/lib/safe-fetch.ts's `truncateForHash`, same bound —
+        see EVIDENCE_CONTENT_BYTES above). AUDIT FIX (re-audit,
+        2026-08-25): previously truncated by CHARACTER count before
+        encoding to UTF-8, which could diverge from the backend's
+        byte-truncated hash for any non-ASCII content. Now both sides
+        truncate the same UTF-8 byte buffer before hashing.
+
         NOTE ON RUNTIME DEFENSIVENESS: different pinned GenVM runner
         versions have been observed to expose slightly different response
         shapes from gl.nondet.web.render (e.g. plain str vs an object with
@@ -972,34 +992,42 @@ class Verdict(gl.Contract):
         in the ecosystem). We defensively coerce to str here and never
         assume one exact attribute name, rather than trusting a single
         docs example to be precisely right for the pinned runner version.
+
+        KNOWN RESIDUAL LIMITATION (documented, not hidden): this compares
+        the CONTRACT's rendered-text fetch (gl.nondet.web.render, mode=
+        "text" — a sandboxed GenVM tool, the only fetch mechanism
+        available inside a nondet block) against a hash the BACKEND
+        committed from a raw HTTP response body it fetched itself
+        (backend/src/lib/safe-fetch.ts has no access to GenVM's renderer).
+        Byte-identical truncation now removes one real source of false
+        mismatches, but a "render to text" step and a raw HTTP fetch can
+        still legitimately extract different text for the same page (e.g.
+        JS-rendered content, differing whitespace/entity handling). This
+        is an architectural constraint, not an oversight — GenVM does not
+        expose a raw-bytes fetch primitive inside nondet blocks. For this
+        reason a hash mismatch is surfaced to the verdict LLM as a
+        signal to weigh, never as automatic proof of tampering (see
+        _build_verdict_prompt) — full byte-for-byte parity across two
+        structurally different fetch mechanisms cannot be guaranteed by
+        design.
         """
         try:
             rendered = gl.nondet.web.render(url, mode="text")
             if isinstance(rendered, (bytes, bytearray)):
-                text = rendered.decode("utf-8", errors="replace")
+                raw_bytes = bytes(rendered)
             elif isinstance(rendered, str):
-                text = rendered
+                raw_bytes = rendered.encode("utf-8", errors="replace")
             else:
                 # Defensive fallback for runner versions returning a richer
                 # object instead of a bare string.
                 text = getattr(rendered, "text", None) or getattr(rendered, "content", None) or str(rendered)
-            return True, str(text)[:MAX_EVIDENCE_FETCH_CHARS]
+                raw_bytes = str(text).encode("utf-8", errors="replace")
+            truncated_bytes = raw_bytes[:EVIDENCE_CONTENT_BYTES]
+            display_text = truncated_bytes.decode("utf-8", errors="replace")
+            fresh_hash = hashlib.sha256(truncated_bytes).hexdigest()
+            return True, display_text, fresh_hash
         except Exception as exc:  # noqa: BLE001 — degrade per-source, never abort the whole verdict
-            return False, f"[fetch failed: {str(exc)[:200]}]"
-
-    @staticmethod
-    def _hash_matches_submission(fetched_text: str, committed_hash: str) -> bool:
-        """Compares a fresh fetch against the content_hash committed at
-        submission time. A live page is allowed to legitimately change, so
-        a mismatch is NOT itself proof of tampering — it's surfaced to the
-        verdict LLM as a signal to weigh (see _build_verdict_prompt), not
-        an automatic verdict. Hashes the FULL fetched text before
-        truncation would be ideal, but the fetch above already truncates
-        to MAX_EVIDENCE_FETCH_CHARS for prompt-size reasons — this compares
-        against that same truncated text, so it only proves "the first
-        MAX_EVIDENCE_FETCH_CHARS still matches", not the entire page.
-        Documented, not hidden."""
-        return hashlib.sha256(fetched_text.encode("utf-8", errors="replace")).hexdigest() == committed_hash
+            return False, f"[fetch failed: {str(exc)[:200]}]", ""
 
     def _build_verdict_prompt(
         self,
@@ -1014,7 +1042,7 @@ class Verdict(gl.Contract):
         # Bounded, attributable "witness record" per source (audit finding,
         # external review 2026-08-25): every item is a fixed-shape block —
         # source, retrieval status, hash-match status, retrieval time —
-        # around the (now much smaller, MAX_EVIDENCE_FETCH_CHARS-capped)
+        # around the (now much smaller, EVIDENCE_CONTENT_BYTES-capped)
         # content itself, rather than an unstructured raw dump.
         evidence_lines = []
         for item in evidence_items:
@@ -1171,9 +1199,9 @@ Respond with ONLY a JSON object, no markdown, with exactly these keys:
                 fetched_text = ""
                 hash_matched = False
                 if ev.kind == "URL":
-                    fetch_ok, fetched_text = self._fetch_evidence_independently(ev.url)
+                    fetch_ok, fetched_text, fresh_hash = self._fetch_evidence_independently(ev.url)
                     if fetch_ok:
-                        hash_matched = self._hash_matches_submission(fetched_text, ev.content_hash)
+                        hash_matched = fresh_hash == ev.content_hash
                     fetch_results[str(int(ev.id))] = {"fetch_ok": fetch_ok, "hash_matched": hash_matched}
                 items.append({
                     "id": int(ev.id),

@@ -170,13 +170,41 @@ real public URL, `localhost`, and a cloud-metadata address before merging.
 
 Score at re-audit: 3,300/4,000. Five findings, all addressed:
 
-1. **Hash truncation mismatch** — backend hashed up to 2MB of fetched
-   content while the contract truncated its fresh fetch to 1,200
-   *characters* before hashing, so any normal-sized page reported a false
-   mismatch. Fixed: both sides now truncate to the same canonical
-   **1,200-byte** bound before hashing (`EVIDENCE_HASH_TRUNCATION_BYTES` in
-   `safe-fetch.ts`, `EVIDENCE_CONTENT_BYTES` in `verdict_contract.py` — the
-   two constants must stay numerically equal).
+1. **Hash truncation mismatch, and render-vs-raw content mismatch** — two
+   separate problems raised in the re-audit:
+   - Backend truncated by up to 2MB of raw bytes while the contract
+     truncated its fresh fetch to 1,200 *characters* before UTF-8
+     encoding — for non-ASCII content those splits at different points,
+     so even byte-identical pages could hash differently. Fixed: both
+     sides now truncate the same canonical **1,200-byte UTF-8 buffer**
+     before hashing (`EVIDENCE_HASH_TRUNCATION_BYTES` in `safe-fetch.ts`,
+     `EVIDENCE_CONTENT_BYTES` in `verdict_contract.py` — the two constants
+     must stay numerically equal).
+   - Separately, the backend hashed the **raw HTTP response body**
+     (markup, scripts, styles and all) while the contract's fresh fetch
+     goes through `gl.nondet.web.render(url, mode="text")` — a
+     rendered-text view. Fixed: `safe-fetch.ts` now reduces HTML responses
+     to visible text (`extractVisibleText` — strips `<script>`/`<style>`/
+     `<noscript>` blocks, strips remaining tags, decodes entities,
+     collapses whitespace) before hashing, closer to what the renderer
+     produces. **This is a documented residual limitation, not a claim of
+     full parity** — a hand-rolled tag-stripper and GenVM's actual
+     renderer are not provably byte-identical for JS-driven content or
+     unusual markup, and GenVM exposes no raw-bytes fetch primitive inside
+     nondet blocks to fetch through instead. This is why the contract has
+     always treated (and continues to treat) a hash mismatch as a signal
+     for the verdict LLM to weigh, never automatic proof of tampering —
+     see the matching docstrings in both `safe-fetch.ts` and
+     `_fetch_evidence_independently` in `verdict_contract.py`.
+   - **Mid-fix regression caught and re-applied**: between the first and
+     second audit rounds, an external process (GenLayer Studio's own file
+     sync, observed stripping this file's changes more than once during
+     development) silently reverted the byte-truncation fix in
+     `verdict_contract.py` back to character-truncation — meaning the fix
+     described in round 1 was never actually live in the version the
+     re-audit reviewed. Re-applied and this time verified with the
+     deterministic test suite (19/19 passing) immediately after editing,
+     not assumed from a prior commit.
 2. **SSRF guard vulnerable to DNS rebinding** — the original guard called
    `dns.lookup()` to validate a hostname, then called `fetch()` separately,
    which re-resolves DNS independently; a hostile DNS server could answer
@@ -221,20 +249,40 @@ Score at re-audit: 3,300/4,000. Five findings, all addressed:
    dual-role wallet testing.
 5. **No real GenVM validation** — the 19/19 passing unit tests
    (`tests/contract/`) run against a stub `genlayer` module, not real
-   GenVM. Partially addressed with real (non-stubbed) verification: the
-   locally installed `genlayer` CLI (v0.39.2) was used to run
-   `genlayer schema <address>` and `genlayer call <address>
-   get_protocol_config` against the live deployed contract, confirming it
-   loads correctly on StudioNet and that `submit_evidence`'s parameter
-   list exactly matches `[case_id, kind, url, description, tx_reference,
-   content_hash]`. This CLI version has no `genvm-lint`/test subcommand
-   (checked `genlayer --help`: only `deploy/call/write/schema/code/receipt/
-   trace/appeal/...` exist) and a StudioNet end-to-end write-transaction
-   CI would require a funded wallet not available in this environment —
-   left as a known gap below.
+   GenVM. Two real avenues were investigated for closing this, both
+   partially blocked on things outside this environment:
+   - **StudioNet CLI checks (done)**: the locally installed `genlayer` CLI
+     (v0.39.2) was used to run `genlayer schema <address>` and
+     `genlayer call <address> get_protocol_config` against the live
+     deployed contract, confirming it loads correctly on StudioNet and
+     that `submit_evidence`'s parameter list exactly matches
+     `[case_id, kind, url, description, tx_reference, content_hash]`.
+     This CLI version has no `genvm-lint`/test subcommand (checked
+     `genlayer --help`: only
+     `deploy/call/write/schema/code/receipt/trace/appeal/...` exist).
+   - **Local multi-validator GenVM simulator (attempted, blocked)**: the
+     CLI has a `genlayer up` / `genlayer init` localnet mode that runs a
+     real multi-validator GenVM consensus network in Docker — this would
+     let contract writes, nondet consensus, and evidence fetch/verdict
+     logic run against the actual GenVM runtime rather than a stub,
+     without needing a funded StudioNet wallet. Docker was confirmed
+     available and `genlayer init --numValidators 3` was run; it reached
+     an interactive provider-selection step requiring a real LLM provider
+     API key (OpenAI, Heurist, Gemini, or XAI — for the validators'
+     `gl.nondet.exec_prompt` calls) before it can start. No such key
+     exists anywhere in this project's environment or `.env` files, and
+     one was not fabricated or requested to force this through. **This
+     remains an open gap**: a real local GenVM validator-consensus test
+     run is one funded LLM provider key away, not blocked by tooling.
 
 ## Known gaps / follow-up before real-value production use
 
+- [ ] Real local GenVM validator-consensus test run via `genlayer up`
+      localnet mode — tooling and Docker are confirmed working, blocked
+      only on an LLM provider API key (OpenAI/Heurist/Gemini/XAI) for the
+      validators' `gl.nondet.exec_prompt` calls, which does not exist in
+      this environment. Supplying one key unblocks this; it does not need
+      a funded StudioNet wallet, only a provider key.
 - [ ] `genvm-lint`-equivalent / direct validator tests with divergent
       fetch/LLM mocks, and at least one recorded StudioNet end-to-end
       write transaction in CI (needs a funded CI wallet — not available in

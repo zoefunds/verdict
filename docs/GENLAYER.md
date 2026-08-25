@@ -68,11 +68,30 @@ a `content_hash` parameter to `submit_evidence` that the old contract
 never had, so the old and new contracts are not wire-compatible. Any case
 data on the old address is a retired test artifact only.
 
-**Awaiting redeployment of the fixed contract.** Once you deploy the
-current `contracts/verdict_contract.py` to StudioNet and provide the
-resulting address, it gets wired into the backend indexer and frontend
-client (`frontend/lib/genlayer.ts`) and re-verified end-to-end — see
-`docs/DEPLOYMENT.md`.
+**v2 deployed and wired in:** `0x2be36DaF2FC169310dB7Cc2dAFBAa3Db410aA195`
+is the current production contract, wired into the Fly.io backend
+(`VERDICT_CONTRACT_ADDRESS`), the indexer, and the Vercel frontend
+(`NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS`). Verified against real StudioNet
+state via the `genlayer` CLI: `genlayer schema 0x2be36...` confirms the
+contract loads and `submit_evidence`'s parameter list matches
+`[case_id, kind, url, description, tx_reference, content_hash]`, and
+`genlayer call 0x2be36... get_protocol_config` returns live config —
+both checked against the actual deployed bytecode, not assumed from
+source. All test cases from the retired v1 address
+(`0x5611...036DbD`) were cleared from the production database rather than
+carried forward, since they predate the `content_hash` API and can't be
+replayed against v2.
+
+**Re-audit note (2026-08-25):** the contract source changed again after
+v2 was deployed — a canonical byte-truncation fix for evidence hashing
+(see `docs/SECURITY.md` "Second external audit round", finding #1) was
+lost to an external file-sync revert and has now been reapplied. **This
+means the currently checked-in `contracts/verdict_contract.py` no longer
+matches the bytecode at `0x2be36...` exactly** — the deployed contract
+still has the character-truncation bug this fix addresses. A fresh
+redeployment (by you, per this project's standing rule that contract
+deployment is never done by Claude) is needed before the hash-comparison
+fix is live, not just committed.
 
 ### SDK version note
 
