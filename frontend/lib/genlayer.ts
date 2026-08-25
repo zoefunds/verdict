@@ -204,6 +204,50 @@ export const genlayerContract = {
     return writeCase(args.account, "settle_case", [args.contractCaseId]);
   },
 
+  /** Maps to `cancel_case(case_id)` — claimant-only, before the respondent has funded. Full stake refund. */
+  async cancelCase(args: { account: `0x${string}`; contractCaseId: number }): Promise<{ txHash: string }> {
+    return writeCase(args.account, "cancel_case", [args.contractCaseId]);
+  },
+
+  /**
+   * Maps to `open_appeal_evidence_window(case_id, additional_evidence_window_seconds)`
+   * — either party, once an appeal has been filed (status APPEALED), moves
+   * the case to RE_INVESTIGATION and reopens evidence submission so the
+   * "new evidence" cited in the appeal can actually be submitted.
+   */
+  async openAppealEvidenceWindow(args: {
+    account: `0x${string}`;
+    contractCaseId: number;
+    additionalEvidenceWindowSeconds?: number;
+  }): Promise<{ txHash: string }> {
+    return writeCase(args.account, "open_appeal_evidence_window", [
+      args.contractCaseId,
+      args.additionalEvidenceWindowSeconds ?? 3 * 24 * 60 * 60,
+    ]);
+  },
+
+  /**
+   * Maps to `resolve_appeal(case_id)` — the SECOND and final adjudication
+   * step. Only callable once RE_INVESTIGATION's evidence deadline has
+   * passed. Triggers independent re-evaluation; refunds the appeal bond
+   * to the appellant if the appeal succeeded, otherwise forfeits it to
+   * treasury. The resulting verdict is final — no further appeals.
+   */
+  async resolveAppeal(args: { account: `0x${string}`; contractCaseId: number }): Promise<{ txHash: string }> {
+    return writeCase(args.account, "resolve_appeal", [args.contractCaseId]);
+  },
+
+  /**
+   * Maps to `claim_case_abandonment(case_id)` — lets a case party reclaim
+   * their OWN deposited stake (never a counterparty's) once the case has
+   * stalled past its current stage's deadline plus a 14-day grace period.
+   * The only fund-recovery exit that exists specifically so GEN can never
+   * be permanently stuck if a counterparty disappears.
+   */
+  async claimCaseAbandonment(args: { account: `0x${string}`; contractCaseId: number }): Promise<{ txHash: string }> {
+    return writeCase(args.account, "claim_case_abandonment", [args.contractCaseId]);
+  },
+
   // ---- Reads: go through the backend proxy, not a direct RPC call, so the
   // shared Redis rate-limit budget is respected. See lib/genlayer-proxy.ts. ----
 

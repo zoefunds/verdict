@@ -57,3 +57,12 @@ export async function fetchCaseEvidenceIds(apiBaseUrl: string, contractCaseId: n
   const body = (await res.json()) as { ids: number[] };
   return body.ids;
 }
+
+export async function fetchProtocolMetrics(apiBaseUrl: string) {
+  const res = await fetch(`${apiBaseUrl}/genlayer/metrics`);
+  if (!res.ok) {
+    throw new Error(`Failed to read protocol metrics (${res.status})`);
+  }
+  const body = (await res.json()) as { metrics: Record<string, unknown> };
+  return body.metrics;
+}

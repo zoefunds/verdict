@@ -18,6 +18,7 @@ import {
   getCaseEvents,
   getCaseEvidenceIds,
   getEvidence,
+  getMetrics,
   viewCall,
   isContractConfigured,
 } from "../lib/genlayer-client.js";
@@ -101,6 +102,19 @@ export const genlayerRoutes: FastifyPluginAsync = async (app) => {
     } catch (err) {
       req.log.warn({ err }, "genlayer get_evidence failed");
       return reply.code(502).send({ error: "Failed to read evidence from contract" });
+    }
+  });
+
+  app.get("/genlayer/metrics", async (req, reply) => {
+    if (!isContractConfigured()) {
+      return reply.code(503).send({ error: "Contract not yet configured" });
+    }
+    try {
+      const metrics = await getMetrics();
+      return { metrics };
+    } catch (err) {
+      req.log.warn({ err }, "genlayer get_metrics failed");
+      return reply.code(502).send({ error: "Failed to read metrics from contract" });
     }
   });
 

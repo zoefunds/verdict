@@ -16,7 +16,9 @@ import { useAuth } from "@/hooks/useAuth";
 import { useActiveConstitutions } from "@/hooks/useCases";
 import { usePublishCaseOnChain } from "@/hooks/usePublishCaseOnChain";
 import { casesApi } from "@/lib/api";
-import { isContractDeployed } from "@/lib/env";
+import { isContractDeployed, env } from "@/lib/env";
+import { fetchProtocolConfig } from "@/lib/genlayer-proxy";
+import { useQuery } from "@tanstack/react-query";
 import type { Case } from "@/types";
 
 const STEPS = ["Claim", "Rules & Recipe", "Stake & Visibility", "Review"] as const;
@@ -27,6 +29,12 @@ export default function CreateCasePage() {
   const { address } = useAccount();
   const { data: constitutionsData } = useActiveConstitutions();
   const { state: publishState, publish } = usePublishCaseOnChain();
+  const { data: protocolConfig } = useQuery({
+    queryKey: ["protocol-config"],
+    queryFn: () => fetchProtocolConfig(env.apiBaseUrl),
+    enabled: isContractDeployed,
+  });
+  const appealBondBps = protocolConfig ? Number(protocolConfig.appeal_bond_bps ?? 0) : null;
 
   const [step, setStep] = useState(0);
   const [submitting, setSubmitting] = useState(false);
@@ -45,6 +53,14 @@ export default function CreateCasePage() {
     evidenceWindowHours: 72,
     visibility: "public" as "public" | "private",
   });
+
+  // Display-only estimate assuming a matching respondent stake (the usual
+  // case) — the contract computes the real figure at appeal time from the
+  // actual combined stake, which is authoritative, not this estimate.
+  const estimatedAppealBondGen =
+    appealBondBps !== null && form.stakeAmountGen
+      ? ((Number(form.stakeAmountGen) * 2 * appealBondBps) / 10000).toFixed(4).replace(/\.?0+$/, "")
+      : "—";
 
   const constitutions = constitutionsData?.constitutions ?? [];
 
@@ -87,7 +103,11 @@ export default function CreateCasePage() {
         caseRules: form.caseRulesText.split("\n").map((s) => s.trim()).filter(Boolean),
         respondentAddress: form.respondentAddress,
         stakeAmountWei: toWei(form.stakeAmountGen),
-        appealBondAmountWei: toWei(form.appealBondAmountGen),
+        // Cosmetic/display only — never sent to or checked by the
+        // contract, which computes the real bond itself at appeal time.
+        // Store the same estimate shown in the wizard so the case detail
+        // page doesn't display "0 GEN" for this field.
+        appealBondAmountWei: toWei(estimatedAppealBondGen === "—" ? "0" : estimatedAppealBondGen),
         visibility: form.visibility,
         evidenceWindowHours: form.evidenceWindowHours,
       });
@@ -236,8 +256,15 @@ export default function CreateCasePage() {
                 <Field label="Stake Amount (GEN)">
                   <Input value={form.stakeAmountGen} onChange={(e) => update("stakeAmountGen", e.target.value)} placeholder="10" inputMode="decimal" />
                 </Field>
-                <Field label="Appeal Bond Amount (GEN)">
-                  <Input value={form.appealBondAmountGen} onChange={(e) => update("appealBondAmountGen", e.target.value)} placeholder="2" inputMode="decimal" />
+                <Field label="Appeal Bond (protocol-determined)">
+                  <div className="rounded border border-outline-variant bg-surface-container-high px-3 py-2 text-body-sm text-on-surface-variant">
+                    {estimatedAppealBondGen} GEN (estimated — not set per case)
+                  </div>
+                  <p className="mt-1 text-body-sm text-on-surface-variant">
+                    The contract computes the actual required bond itself, as a protocol-wide percentage
+                    (currently {appealBondBps !== null ? appealBondBps / 100 : "…"}%) of the combined stake at
+                    the time an appeal is filed — it is never chosen per case.
+                  </p>
                 </Field>
                 <Field label="Evidence Window (hours)">
                   <Input type="number" value={form.evidenceWindowHours} onChange={(e) => update("evidenceWindowHours", Number(e.target.value))} />
@@ -260,7 +287,7 @@ export default function CreateCasePage() {
                 <ReviewRow label="Respondent" value={form.respondentAddress || "—"} />
                 <ReviewRow label="Category" value={form.category} />
                 <ReviewRow label="Stake" value={`${form.stakeAmountGen || "0"} GEN`} />
-                <ReviewRow label="Appeal Bond" value={`${form.appealBondAmountGen || "0"} GEN`} />
+                <ReviewRow label="Appeal Bond (protocol-determined estimate)" value={`${estimatedAppealBondGen} GEN`} />
                 <ReviewRow label="Evidence Window" value={`${form.evidenceWindowHours}h`} />
                 <ReviewRow label="Visibility" value={form.visibility} />
               </div>

@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { casesApi, casebookApi, evidenceApi, constitutionsApi } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
-import { fetchCaseFromContract } from "@/lib/genlayer-proxy";
+import { fetchCaseFromContract, fetchProtocolMetrics } from "@/lib/genlayer-proxy";
 import { env, isContractDeployed } from "@/lib/env";
 
 /**
@@ -18,6 +18,14 @@ export function useContractCase(contractCaseId: string | null | undefined) {
     queryKey: ["contract-case", contractCaseId],
     queryFn: () => fetchCaseFromContract(env.apiBaseUrl, Number(contractCaseId)),
     enabled: Boolean(contractCaseId) && isContractDeployed,
+    // Case lifecycle actions gate on wall-clock deadlines (evidence/appeal
+    // windows) as well as on-chain state changed by the OTHER party — a
+    // one-shot fetch would leave the UI stuck showing a stale action (e.g.
+    // "waiting for the window to close") long after the deadline actually
+    // passed, or after the other party's transaction confirmed, with no
+    // way to notice short of a manual page reload. Poll periodically so
+    // both kinds of transition surface on their own.
+    refetchInterval: 15_000,
   });
 }
 
@@ -35,6 +43,11 @@ export function useCase(id: string | undefined) {
     queryKey: ["case", id],
     queryFn: () => casesApi.get(id as string),
     enabled: Boolean(id),
+    // The off-chain status here lags the contract by up to one indexer
+    // poll cycle (~15s) — poll here too so a case detail page open in the
+    // background catches a status transition (e.g. respondent funded, or
+    // the indexer catching up) without the user needing to reload.
+    refetchInterval: 15_000,
   });
 }
 
@@ -65,5 +78,14 @@ export function useActiveConstitutions() {
   return useQuery({
     queryKey: ["constitutions"],
     queryFn: () => constitutionsApi.listActive(),
+  });
+}
+
+/** Protocol-wide totals read directly from the deployed contract's get_metrics. */
+export function useProtocolMetrics() {
+  return useQuery({
+    queryKey: ["protocol-metrics"],
+    queryFn: () => fetchProtocolMetrics(env.apiBaseUrl),
+    enabled: isContractDeployed,
   });
 }

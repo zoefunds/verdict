@@ -7,13 +7,14 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/case/StatusBadge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/useAuth";
-import { useMyCases } from "@/hooks/useCases";
+import { useMyCases, useProtocolMetrics } from "@/hooks/useCases";
 import { formatWei, formatDate } from "@/lib/utils";
 import { PlusCircle } from "lucide-react";
 
 export default function DashboardPage() {
   const { isAuthenticated } = useAuth();
   const { data, isLoading, isError } = useMyCases();
+  const { data: metrics } = useProtocolMetrics();
   const cases = data?.cases ?? [];
 
   const activeCount = cases.filter((c) => !["settled", "cancelled", "abandoned"].includes(c.status)).length;
@@ -37,6 +38,19 @@ export default function DashboardPage() {
               <StatCard label="Resolved Cases" value={isLoading ? null : String(resolvedCount)} />
               <StatCard label="Total Collateral Locked" value={isLoading ? null : `${formatWei(totalStaked.toString())} GEN`} />
             </div>
+
+            {metrics && (
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                <StatCard label="Protocol Cases" value={String(metrics.case_count ?? "—")} small />
+                <StatCard label="Protocol Evidence" value={String(metrics.evidence_count ?? "—")} small />
+                <StatCard label="Protocol Appeals" value={String(metrics.total_appeals ?? "—")} small />
+                <StatCard
+                  label="Protocol Volume"
+                  value={`${formatWei(String(metrics.total_volume_wei ?? "0"))} GEN`}
+                  small
+                />
+              </div>
+            )}
 
             <div className="flex items-center justify-between">
               <h2 className="text-headline-sm text-on-surface">Your Cases</h2>
@@ -111,12 +125,14 @@ export default function DashboardPage() {
   );
 }
 
-function StatCard({ label, value }: { label: string; value: string | null }) {
+function StatCard({ label, value, small = false }: { label: string; value: string | null; small?: boolean }) {
   return (
     <Card>
-      <CardContent className="p-6">
-        <p className="font-mono text-label-md uppercase tracking-wide text-on-surface-variant">{label}</p>
-        <p className="mt-2 text-headline-lg text-on-surface">{value ?? <Skeleton className="h-9 w-20" />}</p>
+      <CardContent className={small ? "p-4" : "p-6"}>
+        <p className="font-mono text-label-sm uppercase tracking-wide text-on-surface-variant">{label}</p>
+        <p className={small ? "mt-1 text-headline-sm text-on-surface" : "mt-2 text-headline-lg text-on-surface"}>
+          {value ?? <Skeleton className="h-9 w-20" />}
+        </p>
       </CardContent>
     </Card>
   );
