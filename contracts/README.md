@@ -12,24 +12,51 @@ stake, and partial verdicts split proportionally. Either party may appeal
 once, within a 7-day window, by posting an appeal bond; the second verdict is
 final.
 
-## v2 — external audit fixes (2026-08-25)
+## Version history
 
-This is a **new contract version**, not compatible with the previously
-deployed address (`0x56118ae3ee66b662a9a4CEf3424008c1D1036DbD`, now
-retired — see `docs/GENLAYER.md`). An external audit found six real
-issues, detailed in full in `docs/SECURITY.md` "External audit findings".
-The change that affects the deploy/integration surface:
+**v1** — `0x56118ae3ee66b662a9a4CEf3424008c1D1036DbD` (retired). First
+production deployment, exercised end-to-end on StudioNet (real case
+creation, respondent funding, evidence submission, a real
+GenLayer-rendered verdict, a real appeal, appeal-evidence resubmission).
+Superseded once an external audit found real issues requiring a
+wire-incompatible change to `submit_evidence`.
 
-**`submit_evidence` gained a required 6th parameter, `content_hash`** (hex
-sha256 of the evidence's actual content — for URLs, the fetched page
-body, never the URL string). The constructor's signature is **unchanged**
-— the deploy command below is the same as before.
+**v2** — `0x2be36DaF2FC169310dB7Cc2dAFBAa3Db410aA195` (retired). Fixed six
+issues from the first external audit round (see `docs/SECURITY.md`
+"External audit findings"): malformed LLM output silently becoming
+`INCONCLUSIVE` instead of raising, a 15%-wide consensus tolerance,
+unbounded evidence surface (40 items × 5000 chars), a blanket
+`fetch_succeeded = True` marker instead of real per-item results, and —
+the change that affects deploy/integration — **`submit_evidence` gained a
+required 6th parameter, `content_hash`** (hex sha256 of the evidence's
+actual content — for URLs, the fetched page body, never the URL string).
+The constructor's signature was unchanged.
 
-The other five fixes (stricter verdict-output validation, discrete
-settlement bands instead of a wide raw tolerance, a bounded/structured
-evidence prompt, real per-item fetch-result recording instead of a
-blanket marker, and this content-hash commitment) are internal logic
-changes with no effect on the deploy command or constructor args.
+**v3 (current)** — `0xD570c9bA2B68b10d0c86EDD9Fc5B384c9ecD7185`. Fixed a
+canonicalization bug from a second external audit round: v2's evidence
+content-hash truncated by *character* count before UTF-8 encoding, while
+the backend truncated by *byte* count — for non-ASCII content those could
+diverge and produce different hashes for identical content. v3 truncates
+the same UTF-8 byte buffer on both sides (see `EVIDENCE_CONTENT_BYTES` in
+`verdict_contract.py`, which must stay numerically equal to
+`EVIDENCE_HASH_TRUNCATION_BYTES` in `backend/src/lib/safe-fetch.ts`). No
+parameter signature changes from v2 — `submit_evidence` is unchanged;
+this is a pure internal-logic redeploy. Verified end-to-end with real
+signed StudioNet transactions covering the full lifecycle including the
+appeal path — see `docs/SECURITY.md` "Live end-to-end lifecycle audit".
+
+**Known residual limitation, by design, not a bug to chase further:** the
+content-hash comparison can still legitimately mismatch even after the v3
+fix, because the contract's fresh fetch goes through
+`gl.nondet.web.render` (GenVM's sandboxed renderer — the only fetch
+mechanism available inside a nondet block) while the backend fetches raw
+HTTP and reduces it to approximate visible text itself. These are two
+structurally different extraction mechanisms with no shared raw-bytes
+fetch primitive to unify them against. This is why a hash mismatch has
+always been treated as a signal for the verdict LLM to weigh, never
+automatic proof of tampering — confirmed live: the real test case's
+evidence hash legitimately mismatched, and the LLM correctly reasoned
+about it as a weakening (not disqualifying) signal rather than erroring.
 
 ## Contents
 
@@ -231,3 +258,37 @@ The contract address is emitted by the deployment transaction itself — it is
 **You (the user) must supply this address** to any application, script, or
 documentation that references the deployed contract. Nothing in this
 repository hard-codes or guesses a contract address.
+
+## Interacting with the deployed contract
+
+Reads work fine via the CLI: `genlayer call <address> <method> [--args ...]`.
+
+**Writes to `@gl.public.write.payable` methods (`create_case`,
+`fund_respondent_stake`, `file_appeal`) cannot be exercised via `genlayer
+write` in CLI v0.39.2** — that subcommand hardcodes `value: 0n` internally
+and has no `--value` flag, confirmed by reading the installed CLI's
+source. To send a real payable transaction from a script (e.g. for
+testing), use `genlayer-js` directly instead of the CLI:
+
+```js
+import { createClient, createAccount } from "genlayer-js";
+import { studionet } from "genlayer-js/chains";
+
+const account = createAccount(privateKeyHex); // 0x-prefixed private key
+const client = createClient({ chain: studionet, account });
+const txHash = await client.writeContract({
+  address: contractAddress,
+  functionName: "create_case",
+  args: [respondentAddress, title, claimText, stakeWei, evidenceWindowSeconds, joinWindowSeconds],
+  value: stakeWei, // this is the part `genlayer write` can't do
+});
+const receipt = await client.waitForTransactionReceipt({ hash: txHash, retries: 120, interval: 3000 });
+```
+
+This is exactly what `frontend/lib/genlayer.ts` does with a browser wallet
+provider, and what the project's real end-to-end lifecycle test did with a
+Node-side private-key account instead — same underlying SDK call either
+way. A `.json` keystore created via `genlayer account create` can be
+decrypted to a raw private key with `ethers`'
+`Wallet.fromEncryptedJson(json, password)` if you need to script against
+an existing CLI-managed account rather than a fresh one.

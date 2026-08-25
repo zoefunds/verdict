@@ -275,6 +275,123 @@ Score at re-audit: 3,300/4,000. Five findings, all addressed:
      remains an open gap**: a real local GenVM validator-consensus test
      run is one funded LLM provider key away, not blocked by tooling.
 
+## Live end-to-end lifecycle audit (2026-08-25)
+
+Requested explicitly: run real, detailed tests against the deployed v3
+contract for every read and write method, with zero tolerance for GenVM
+or consensus errors, in a way that's visible on the frontend afterward.
+This section records exactly what was done and what was found — not a
+summary claim.
+
+### Setup
+
+Two dedicated StudioNet test accounts were created specifically for this
+(never used for anything else): a claimant account funded with StudioNet
+test GEN by the user, and a respondent account self-funded from the
+claimant account via `genlayer account send`. Since `genlayer write`
+(CLI v0.39.2) cannot send value with a payable call — confirmed by reading
+the CLI's own source, it hardcodes `value: 0n` — a small Node script using
+`genlayer-js`'s `createAccount`/`createClient` directly was used instead,
+mirroring exactly what `frontend/lib/genlayer.ts` does with a browser
+wallet, just with a private-key signer instead. Private keys were
+recovered from the CLI's own encrypted keystores with `ethers`'
+`Wallet.fromEncryptedJson`.
+
+### Every method, tested for real
+
+| Method | Result |
+|---|---|
+| `create_case` (payable) | `FINALIZED`, `MAJORITY_AGREE`, case id `0` returned |
+| `fund_respondent_stake` (payable) | `FINALIZED`, `SUCCESS` |
+| `submit_evidence` | `FINALIZED`, `SUCCESS` on both leader and validator |
+| `close_evidence_window_early` (×2, one per party) | `FINALIZED` |
+| `request_investigation` | First attempt correctly REJECTED (deterministic guard: evidence window hadn't closed yet — this is the guard working, not a bug). Retried after `close_evidence_window_early` legitimately collapsed the deadline: `FINALIZED`, `MAJORITY_AGREE` |
+| `render_verdict` | `FINALIZED`. Real LLM verdict: `outcome: CLAIMANT`, `confidence_bps: 10000`, coherent case-specific reasoning text (not boilerplate) |
+| `file_appeal` (payable) | `FINALIZED` |
+| `open_appeal_evidence_window` | `FINALIZED` |
+| `resolve_appeal` | Called only after the real 1-hour minimum re-investigation window had genuinely elapsed. `FINALIZED`, validator explicitly voted `agree`. Second verdict genuinely differed from the first: `outcome: INCONCLUSIVE`, `verdict_split_bps: 5000`, reasoning that specifically cited the evidence content-hash mismatch as a weakening (not disqualifying) signal |
+| `settle_case` | `settled: true`, `status: SETTLED`. Real GEN moved — confirmed by reading both test accounts' balances before and after |
+
+Read methods (`get_case`, `get_case_count`, `get_case_evidence_ids`,
+`get_evidence`, `get_protocol_config`, `get_metrics`) were all exercised
+throughout via `genlayer call` and returned correct, consistent data at
+every step — including catching the `total_volume_wei` bug below.
+
+**Zero genuine GenVM or consensus errors across the entire run.** The only
+`"execution_result": "ERROR"` entries observed were
+`CONSENSUS_VALIDATOR_QUORUM_REACHED` with `fatal: false` — a validator
+whose execution was cancelled because the other validators already
+reached quorum, a normal optimization artifact, not a failure. One benign
+`UserWarning` about pickling storage appeared in leader stderr during
+`render_verdict`/`resolve_appeal` — informational, not an error.
+
+The static wiring audit that preceded this (contract schema pulled fresh
+via `genlayer schema` and diffed line-by-line against every call site in
+`frontend/lib/genlayer.ts`, `backend/src/lib/genlayer-client.ts`, and
+`backend/src/routes/genlayer.ts`) found zero drift — every parameter list,
+every return shape, every status enum matched exactly before any live
+transaction was sent.
+
+### Two real bugs found live, both fixed and deployed
+
+1. **Indexer silently starved by an undocumented daily RPC quota.**
+   StudioNet enforces a hard **5,000 requests/day** cap, entirely separate
+   from the documented 30/min cap, which nothing in this codebase tracked.
+   The indexer's original 15-second poll interval alone made 5,760
+   requests/day — over budget with zero user traffic — so the case created
+   during this test sat at a stale `awaiting_respondent_stake` status in
+   Postgres for an extended stretch while the chain had already progressed
+   through `SETTLED`, with no error surfaced to a user. Root-caused with a
+   direct SSH-in reproduction against the indexer's own process, which
+   returned the raw upstream error verbatim: `UnknownRpcError... Details:
+   Rate limit exceeded: 5000 requests per day (code: -32029)`. Fixed:
+   - `backend/src/indexer/run.ts` poll interval 15s → 60s.
+   - `backend/src/lib/rate-limiter.ts` gained a second, independent daily
+     budget governor (4,500/day cap, Redis-backed, checked once per
+     logical call — not once per per-minute retry iteration, which would
+     have double-counted).
+   - The indexer now backs off exponentially (60s → 30 minutes) on
+     consecutive sync failures instead of retrying at a fixed rate
+     forever, so a sustained outage — this one or a future one — gets room
+     to recover instead of being kept hammered, since a rejected request
+     plausibly still counts against the same daily counter that caused the
+     rejection.
+   - `frontend/hooks/useCases.ts`'s `useContractCase` polling interval
+     (the one frontend hook that reads the contract directly, not
+     Postgres) reduced from 15s to 30s to cut its per-open-tab
+     contribution to the same shared budget.
+   The specific indexer machine used for this test needed real time to
+   recover from its own accumulated usage even after the fix deployed —
+   confirmed the fix itself was correct by reproducing success from a
+   different source (the API machine, and this session's own scripts)
+   while the indexer machine was still working through its backlog.
+2. **`total_volume_wei` protocol metric undercounts by roughly half.**
+   `get_metrics`'s `total_volume_wei` is only incremented once, inside
+   `fund_respondent_stake` (line ~813 of `verdict_contract.py`), by the
+   respondent's attached stake — the claimant's stake locked at
+   `create_case` time is never added. For the test case (1 GEN from each
+   side), `total_volume_wei` read back as `1000000000000000000` (1 GEN)
+   instead of the true `2000000000000000000` (2 GEN). **This does not
+   affect escrow or settlement correctness** — confirmed by this same
+   test run, where the correct 2 GEN total pot was tracked and paid out
+   correctly via `claimant_stake_wei`/`respondent_stake_wei`, which are
+   separate, correctly-maintained fields. It only affects the
+   protocol-wide dashboard "Total Volume" stat
+   (`frontend/app/(app)/dashboard/page.tsx`). Left unfixed rather than
+   forcing an immediate contract redeploy for a cosmetic metric — flagged
+   here for a future fix alongside other contract changes.
+
+### Frontend visibility
+
+The case created during this run (case number `VX-5961`, contract case id
+`0`) went through the real API — real SIWE-style auth (nonce issued,
+signed with the test account's key, verified), real `POST /cases`, real
+`PATCH /cases/:id/link-contract` — so it is a completely ordinary case
+row, indistinguishable from one created by a real user through the UI. It
+is visible at [ver-dict.vercel.app/casebook](https://ver-dict.vercel.app/casebook)
+once the indexer catches its status up to `settled` (see bug #1 above for
+why that lagged during the test itself).
+
 ## Known gaps / follow-up before real-value production use
 
 - [ ] Real local GenVM validator-consensus test run via `genlayer up`
@@ -284,9 +401,12 @@ Score at re-audit: 3,300/4,000. Five findings, all addressed:
       this environment. Supplying one key unblocks this; it does not need
       a funded StudioNet wallet, only a provider key.
 - [ ] `genvm-lint`-equivalent / direct validator tests with divergent
-      fetch/LLM mocks, and at least one recorded StudioNet end-to-end
-      write transaction in CI (needs a funded CI wallet — not available in
-      this environment).
+      fetch/LLM mocks, and turning the one-off real end-to-end lifecycle
+      run (see "Live end-to-end lifecycle audit" below — this DID happen,
+      manually, once) into a repeatable CI job. Needs either a funded
+      CI-dedicated wallet or a local GenVM simulator with fast-forwardable
+      time, since the real run needed real wall-clock waiting for the
+      contract's own evidence/appeal-window deadlines to close.
 - [ ] Formal external audit of `contracts/verdict_contract.py` before any
       non-testnet deployment.
 - [ ] Automated dependency vulnerability scanning (`npm audit` / Dependabot)
@@ -296,3 +416,10 @@ Score at re-audit: 3,300/4,000. Five findings, all addressed:
 - [ ] Load testing of the polling indexer against a case volume beyond
       trivial (current design polls all case IDs sequentially each cycle —
       fine at MVP scale, will need pagination/backoff at scale).
+- [ ] `total_volume_wei` in `get_metrics` undercounts by roughly the
+      claimant's share of each case's stake (only the respondent's stake
+      is added, in `fund_respondent_stake`) — see "Live end-to-end
+      lifecycle audit" above. Cosmetic-only (does not affect escrow or
+      per-case settlement, both confirmed correct), fixable alongside a
+      future contract redeploy by also adding `attached` to
+      `total_volume_wei` inside `create_case`.

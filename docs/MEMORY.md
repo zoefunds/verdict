@@ -724,3 +724,62 @@ Deployed frontend to Vercel prod and aliased to `ver-dict.vercel.app`
 after explicit user confirmation (blocked once by the auto-mode
 classifier first, same as the v2 round — expected behavior for a
 publish-to-shared-state action, not a bug).
+
+## Live end-to-end lifecycle audit (2026-08-25) — found real bugs no
+static review would have caught
+
+User asked for a real audit — every read/write method exercised with
+real, detailed transactions against the live v3 contract, zero tolerance
+for GenVM/consensus errors, and the result had to actually show up on the
+frontend. Full write-up: `docs/SECURITY.md` "Live end-to-end lifecycle
+audit". Two things worth remembering:
+
+- **The static wiring audit (schema diff against every call site) found
+  zero drift, and would have missed both real bugs below entirely.**
+  Neither was a code-vs-contract mismatch — they only surfaced by actually
+  running transactions and watching what happened over real wall-clock
+  time. This is the case for doing the real thing, not just the review.
+- **`genlayer write` cannot send payable value** (hardcodes `value: 0n`,
+  confirmed by reading the CLI's own source) — this blocked testing
+  `create_case`/`fund_respondent_stake`/`file_appeal` via the CLI
+  entirely. Worked around with `genlayer-js`'s `createAccount`/
+  `createClient` directly from a Node script, decrypting the CLI's own
+  keystore files with `ethers.Wallet.fromEncryptedJson` to get a raw
+  private key. This is now documented in `contracts/README.md` so it
+  doesn't need re-discovering.
+- Found **the indexer silently starving on an undocumented StudioNet
+  daily quota** (5,000 req/day, separate from the known 30/min cap) —
+  root-caused by SSHing directly into the indexer's Fly machine and
+  reproducing the exact upstream error (`Rate limit exceeded: 5000
+  requests per day`, code -32029), not just inferring it from a generic
+  wrapped error message. Fixed with a slower poll interval, a real daily
+  budget governor, and exponential backoff on sustained failure — see
+  SECURITY.md for detail. The specific machine used for this test kept
+  failing for a while even after the fix deployed, since the fix doesn't
+  retroactively restore an already-blown daily counter — confirmed the
+  fix itself was correct by reproducing success from a different source
+  (the API machine, unaffected) while the indexer machine worked through
+  its backlog. Don't mistake "still failing right after a fix deploys" for
+  "the fix didn't work" without checking whether a different, unaffected
+  source succeeds.
+- Found `get_metrics`'s `total_volume_wei` undercounts by roughly half
+  (only respondent stakes are added, never claimant stakes) purely by
+  reading the actual value back after a real test transaction and noticing
+  it didn't match the known total. A static code read might have caught
+  this too, but it was the live number looking wrong that actually
+  triggered checking the source.
+
+Test accounts created for this (`verdict-test`, `verdict-test-2`) are
+StudioNet-only ephemeral keystores local to this dev machine
+(`~/.genlayer/keystores/`), not tied to the user's real wallet — fine to
+reuse for future live testing, or to ignore/delete, entirely at the
+user's discretion.
+
+Afterward, did a full documentation pass at the user's explicit request:
+rewrote `README.md` from scratch (it still said "scaffolding in
+progress" despite the app being live in production for a while),
+updated `docs/DEPLOYMENT.md` with the current contract address and a
+verify-in-this-order checklist, updated `contracts/README.md` with the
+full v1/v2/v3 version history and the `genlayer write` payable-value
+limitation, and rewrote `tests/contract/README.md`'s "not covered" section
+since most of what it listed as uncovered had since been covered live.

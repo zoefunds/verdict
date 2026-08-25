@@ -84,20 +84,55 @@ the new schema.
 
 ## GenLayer contract -> StudioNet
 
-**Deployed by the user, not by Claude** — see `contracts/README.md` for the
-full, current deployment walkthrough (prerequisites, `genlayer deploy`
+**Deployed by the user, never automated** — see `contracts/README.md` for
+the full, current deployment walkthrough (prerequisites, `genlayer deploy`
 invocation, verification steps, and how to obtain the resulting contract
-address). Once you have the address, provide it and I will wire it into:
+address). Current production address:
+`0xD570c9bA2B68b10d0c86EDD9Fc5B384c9ecD7185` ("v3" — see
+`contracts/README.md` for what changed across versions).
+
+Once you have a new address, wire it into:
 
 - `backend/.env` (`VERDICT_CONTRACT_ADDRESS`, `GENLAYER_RPC_URL`)
 - `frontend/.env.local` (`NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS`,
   `NEXT_PUBLIC_GENLAYER_RPC_URL`)
-- Fly.io secrets (`flyctl secrets set VERDICT_CONTRACT_ADDRESS=...`)
-- Vercel environment variables
+- Fly.io secrets: `flyctl secrets set VERDICT_CONTRACT_ADDRESS=... --app verdict-backend`
+- Vercel environment variables: `vercel env add NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS production`,
+  then `vercel --prod`, then re-alias: `vercel alias set <new-deploy-url> ver-dict.vercel.app`
 
-...and then we'll verify end-to-end: a real view call succeeds, a real
-write call (case creation) succeeds, the indexer picks up the resulting
-state change, and the frontend reflects it.
+Then verify end-to-end, in this order, with real calls rather than assuming
+success from a green deploy log:
+
+1. **Real read**: `genlayer schema <address>` — confirms the contract loads
+   and every method's parameter list matches the checked-in source exactly
+   (this catches a stale-deploy mismatch immediately).
+2. **Real write**: submit a real transaction (case creation is the natural
+   first one) and confirm `FINALIZED`/`MAJORITY_AGREE` consensus, not just
+   an HTTP 200 from whatever client submitted it.
+3. **Indexer pickup**: confirm the resulting state change reaches
+   Postgres — `curl https://verdict-backend.fly.dev/cases/<id>` and check
+   `status` matches the on-chain value. If it doesn't update within a
+   couple of minutes, check `flyctl logs --app verdict-backend | grep
+   indexer` for the StudioNet daily-quota signature (see
+   `docs/GENLAYER.md` "Rate limiting") before assuming something else is
+   broken.
+4. **Frontend reflects it**: load the case on
+   [ver-dict.vercel.app](https://ver-dict.vercel.app) and confirm the
+   displayed status/data matches. Verify the deployed JS bundle actually
+   contains the new contract address by grepping it directly — `vercel env
+   pull` has been observed to show `NEXT_PUBLIC_*` values as empty
+   strings in this project regardless of what's actually stored, so it is
+   not a reliable way to confirm the env var took.
+
+**If you're redeploying over an address that already has case data**,
+either accept that old-contract cases are retired test artifacts (the
+indexer will just stop finding new state for them), or clear them from
+Postgres explicitly with `backend/src/db/clear_all_cases.ts`:
+
+```bash
+cd backend && npm run build
+flyctl ssh console --app verdict-backend --command "node dist/db/clear_all_cases.js"
+```
 
 ## Environment variable reference
 
