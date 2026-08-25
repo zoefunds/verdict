@@ -138,6 +138,12 @@ export const evidenceApi = {
   submitFile: (formData: FormData) =>
     request<{ evidence: Evidence }>("/evidence/file", { method: "POST", body: formData, auth: true, isFormData: true }),
   listForCase: (caseId: string) => request<{ evidence: Evidence[] }>(`/cases/${caseId}/evidence`),
+  linkContract: (id: string, contractEvidenceId: string) =>
+    request<{ evidence: Evidence }>(`/evidence/${id}/link-contract`, {
+      method: "PATCH",
+      body: { contractEvidenceId },
+      auth: true,
+    }),
 };
 
 // ---- Casebook ----

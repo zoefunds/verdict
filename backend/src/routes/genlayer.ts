@@ -12,7 +12,15 @@
  */
 
 import type { FastifyPluginAsync } from "fastify";
-import { getCase, getCaseCount, getCaseEvents, getEvidence, viewCall, isContractConfigured } from "../lib/genlayer-client.js";
+import {
+  getCase,
+  getCaseCount,
+  getCaseEvents,
+  getCaseEvidenceIds,
+  getEvidence,
+  viewCall,
+  isContractConfigured,
+} from "../lib/genlayer-client.js";
 
 export const genlayerRoutes: FastifyPluginAsync = async (app) => {
   app.get("/genlayer/status", async () => ({
@@ -46,6 +54,24 @@ export const genlayerRoutes: FastifyPluginAsync = async (app) => {
     } catch (err) {
       req.log.warn({ err }, "genlayer get_case failed");
       return reply.code(502).send({ error: "Failed to read case from contract" });
+    }
+  });
+
+  // Case ids are 0-indexed and evidence ids are appended in submission
+  // order to the case's list — so the last element after a submit_evidence
+  // tx confirms is the id that was just created. Avoids decoding the
+  // write's return value directly.
+  app.get("/genlayer/case/:caseId/evidence-ids", async (req, reply) => {
+    if (!isContractConfigured()) {
+      return reply.code(503).send({ error: "Contract not yet configured" });
+    }
+    const { caseId } = req.params as { caseId: string };
+    try {
+      const ids = await getCaseEvidenceIds(Number(caseId));
+      return { ids };
+    } catch (err) {
+      req.log.warn({ err }, "genlayer get_case_evidence_ids failed");
+      return reply.code(502).send({ error: "Failed to read evidence ids from contract" });
     }
   });
 

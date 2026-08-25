@@ -13,6 +13,7 @@ import { EvidenceTimeline } from "@/components/case/EvidenceTimeline";
 import { ConstitutionSidebar } from "@/components/case/ConstitutionSidebar";
 import { EvidenceSubmitForm } from "@/components/case/EvidenceSubmitForm";
 import { VerdictCard } from "@/components/case/VerdictCard";
+import { CaseLifecycleActions } from "@/components/case/CaseLifecycleActions";
 import { useCase, useCaseEvidence, useContractCase } from "@/hooks/useCases";
 import { useTransaction } from "@/hooks/useTransaction";
 import { usePublishCaseOnChain } from "@/hooks/usePublishCaseOnChain";
@@ -128,6 +129,8 @@ export default function CaseDetailsPage() {
 
           <VerdictCard onChainCase={onChainCase as Record<string, unknown> | undefined} />
 
+          <CaseLifecycleActions c={c} onChainCase={onChainCase as Record<string, unknown> | undefined} />
+
           <EscrowBar stakeAmountWei={c.stakeAmountWei} participants={participants} respondentAddress={c.respondentAddress} />
 
           {c.status === "draft" && (
@@ -212,7 +215,7 @@ export default function CaseDetailsPage() {
           </Card>
 
           {c.status === "evidence_window" || c.status === "re_investigation" ? (
-            <EvidenceSubmitForm caseId={c.id} />
+            <EvidenceSubmitForm caseId={c.id} contractCaseId={c.contractCaseId} />
           ) : (
             <Card>
               <CardContent className="p-6 text-body-sm text-on-surface-variant">

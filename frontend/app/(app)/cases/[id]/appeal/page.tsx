@@ -82,7 +82,7 @@ export default function AppealPage() {
           </CardContent>
         </Card>
 
-        <EvidenceSubmitForm caseId={c.id} isAppeal />
+        <EvidenceSubmitForm caseId={c.id} contractCaseId={c.contractCaseId} isAppeal />
       </div>
     </div>
   );

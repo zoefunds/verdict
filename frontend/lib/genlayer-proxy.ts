@@ -43,3 +43,17 @@ export async function fetchCaseCount(apiBaseUrl: string): Promise<number> {
   const body = (await res.json()) as { count: number };
   return body.count;
 }
+
+/**
+ * Evidence ids are appended in submission order to a case's list, so the
+ * last element right after a submit_evidence tx confirms is the id that
+ * was just created — avoids decoding the write's return value directly.
+ */
+export async function fetchCaseEvidenceIds(apiBaseUrl: string, contractCaseId: number): Promise<number[]> {
+  const res = await fetch(`${apiBaseUrl}/genlayer/case/${contractCaseId}/evidence-ids`);
+  if (!res.ok) {
+    throw new Error(`Failed to read evidence ids for case ${contractCaseId} (${res.status})`);
+  }
+  const body = (await res.json()) as { ids: number[] };
+  return body.ids;
+}

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
+import { useAccount } from "wagmi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -10,9 +11,32 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { evidenceApi } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
+import { genlayerContract } from "@/lib/genlayer";
+import { fetchCaseEvidenceIds } from "@/lib/genlayer-proxy";
+import { env } from "@/lib/env";
+import type { Evidence } from "@/types";
 
-export function EvidenceSubmitForm({ caseId, isAppeal = false }: { caseId: string; isAppeal?: boolean }) {
+// Maps the off-chain evidenceType to the contract's `kind` enum
+// (URL / TEXT_STATEMENT / TX_RECORD / DOCUMENT_HASH — see
+// contracts/verdict_contract.py submit_evidence).
+function toContractKind(kind: string): "URL" | "TEXT_STATEMENT" | "TX_RECORD" | "DOCUMENT_HASH" {
+  if (kind === "url") return "URL";
+  if (kind === "transaction_record") return "TX_RECORD";
+  if (kind === "file") return "DOCUMENT_HASH";
+  return "TEXT_STATEMENT";
+}
+
+export function EvidenceSubmitForm({
+  caseId,
+  contractCaseId,
+  isAppeal = false,
+}: {
+  caseId: string;
+  contractCaseId: string | null;
+  isAppeal?: boolean;
+}) {
   const { isAuthenticated } = useAuth();
+  const { address } = useAccount();
   const queryClient = useQueryClient();
   const [kind, setKind] = useState<"url" | "text_statement" | "transaction_record" | "file">("url");
   const [title, setTitle] = useState("");
@@ -21,6 +45,41 @@ export function EvidenceSubmitForm({ caseId, isAppeal = false }: { caseId: strin
   const [textContent, setTextContent] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [onChainStatus, setOnChainStatus] = useState<string | null>(null);
+
+  async function submitOnChain(created: Evidence) {
+    if (!genlayerContract.isDeployed || !contractCaseId || !address) return;
+    setOnChainStatus("Confirm the on-chain evidence commit in your wallet…");
+    try {
+      const contractKind = toContractKind(kind);
+      await genlayerContract.submitEvidenceOnChain({
+        account: address,
+        contractCaseId: Number(contractCaseId),
+        kind: contractKind,
+        url: kind === "url" ? sourceUrl : undefined,
+        description: description || (kind === "file" ? title : undefined),
+        txReference:
+          kind === "transaction_record" ? textContent : kind === "file" ? created.contentHashSha256 : undefined,
+      });
+      setOnChainStatus("Confirming on-chain id…");
+      const ids = await fetchCaseEvidenceIds(env.apiBaseUrl, Number(contractCaseId));
+      const newId = ids[ids.length - 1];
+      if (newId !== undefined) {
+        await evidenceApi.linkContract(created.id, String(newId));
+      }
+      setOnChainStatus("Committed on-chain.");
+      toast.success("Evidence committed on-chain.");
+    } catch (err) {
+      setOnChainStatus(null);
+      toast.error(
+        err instanceof Error
+          ? `Evidence saved, but the on-chain commit failed: ${err.message}`
+          : "Evidence saved, but the on-chain commit failed.",
+      );
+    } finally {
+      queryClient.invalidateQueries({ queryKey: ["evidence", caseId] });
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -29,7 +88,9 @@ export function EvidenceSubmitForm({ caseId, isAppeal = false }: { caseId: strin
       return;
     }
     setSubmitting(true);
+    setOnChainStatus(null);
     try {
+      let created: Evidence;
       if (kind === "file") {
         if (!file) throw new Error("Choose a file");
         const fd = new FormData();
@@ -37,9 +98,10 @@ export function EvidenceSubmitForm({ caseId, isAppeal = false }: { caseId: strin
         fd.append("title", title);
         fd.append("evidenceType", file.type.startsWith("image/") ? "image" : "document");
         fd.append("file", file);
-        await evidenceApi.submitFile(fd);
+        const res = await evidenceApi.submitFile(fd);
+        created = res.evidence;
       } else {
-        await evidenceApi.submitText({
+        const res = await evidenceApi.submitText({
           caseId,
           evidenceType: kind,
           title,
@@ -47,14 +109,21 @@ export function EvidenceSubmitForm({ caseId, isAppeal = false }: { caseId: strin
           sourceUrl: kind === "url" ? sourceUrl : undefined,
           textContent: kind !== "url" ? textContent : undefined,
         });
+        created = res.evidence;
       }
-      toast.success("Evidence submitted.");
+      toast.success("Evidence saved.");
+      queryClient.invalidateQueries({ queryKey: ["evidence", caseId] });
+
+      // Off-chain save always happens first (so nothing is lost if the
+      // wallet step is skipped or fails) — the on-chain commit is a
+      // second, separate step using the same content hash.
+      await submitOnChain(created);
+
       setTitle("");
       setDescription("");
       setSourceUrl("");
       setTextContent("");
       setFile(null);
-      queryClient.invalidateQueries({ queryKey: ["evidence", caseId] });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to submit evidence");
     } finally {
@@ -67,6 +136,20 @@ export function EvidenceSubmitForm({ caseId, isAppeal = false }: { caseId: strin
       <p className="font-mono text-label-md uppercase tracking-wide text-on-surface-variant">
         {isAppeal ? "Submit Appeal Evidence" : "Submit Evidence"}
       </p>
+      {!genlayerContract.isDeployed ? (
+        <p className="text-body-sm text-tertiary">
+          Contract not deployed — evidence will be saved here but not committed on-chain.
+        </p>
+      ) : !contractCaseId ? (
+        <p className="text-body-sm text-tertiary">
+          This case hasn&apos;t been published on-chain yet — evidence will be saved here but not committed
+          on-chain until it has.
+        </p>
+      ) : (
+        <p className="text-body-sm text-on-surface-variant">
+          Saved here first, then committed on-chain via a wallet-signed <code className="font-mono">submit_evidence</code> transaction.
+        </p>
+      )}
       <div>
         <Label className="mb-1.5 block">Type</Label>
         <Select value={kind} onValueChange={(v) => setKind(v as typeof kind)}>
@@ -113,6 +196,7 @@ export function EvidenceSubmitForm({ caseId, isAppeal = false }: { caseId: strin
         <Textarea id="evidence-desc" value={description} onChange={(e) => setDescription(e.target.value)} rows={2} />
       </div>
       <Button type="submit" disabled={submitting}>{submitting ? "Submitting…" : "Submit Evidence"}</Button>
+      {onChainStatus && <p className="text-body-sm text-on-surface-variant">{onChainStatus}</p>}
     </form>
   );
 }

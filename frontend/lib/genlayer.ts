@@ -172,9 +172,31 @@ export const genlayerContract = {
     return writeCase(args.account, "file_appeal", [args.contractCaseId, args.note], args.bondWei);
   },
 
+  /**
+   * Maps to `close_evidence_window_early(case_id)`. Either party may call
+   * this to signal readiness; once BOTH parties have called it, the
+   * contract collapses the evidence deadline to now. Calling it once
+   * (only one side ready) is a no-op on-chain besides recording the
+   * signal — it does not error, so this is safe to call speculatively.
+   */
+  async closeEvidenceWindowEarly(args: { account: `0x${string}`; contractCaseId: number }): Promise<{ txHash: string }> {
+    return writeCase(args.account, "close_evidence_window_early", [args.contractCaseId]);
+  },
+
   /** Maps to `request_investigation(case_id)` — triggers the non-deterministic verdict pipeline. */
   async requestInvestigation(args: { account: `0x${string}`; contractCaseId: number }): Promise<{ txHash: string }> {
     return writeCase(args.account, "request_investigation", [args.contractCaseId]);
+  },
+
+  /**
+   * Maps to `render_verdict(case_id)` — this is the actual adjudication
+   * step: triggers GenLayer's non-deterministic LLM + web-fetch evidence
+   * evaluation and records the structured verdict on-chain. Only callable
+   * once the case is UNDER_INVESTIGATION (i.e. after request_investigation
+   * has already succeeded).
+   */
+  async renderVerdict(args: { account: `0x${string}`; contractCaseId: number }): Promise<{ txHash: string }> {
+    return writeCase(args.account, "render_verdict", [args.contractCaseId]);
   },
 
   /** Maps to `settle_case(case_id)` — triggers payout after a verdict is rendered. */

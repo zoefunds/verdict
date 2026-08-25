@@ -83,6 +83,10 @@ export async function getEvidence(evidenceId: number): Promise<Record<string, un
   return viewCall<Record<string, unknown>>("get_evidence", [evidenceId]);
 }
 
+export async function getCaseEvidenceIds(caseId: number): Promise<number[]> {
+  return viewCall<number[]>("get_case_evidence_ids", [caseId]);
+}
+
 export function isContractConfigured(): boolean {
   const addr = env.VERDICT_CONTRACT_ADDRESS;
   return Boolean(addr) && !addr!.startsWith("changeme");

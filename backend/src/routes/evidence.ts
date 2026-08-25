@@ -131,6 +131,34 @@ export const evidenceRoutes: FastifyPluginAsync = async (app) => {
     return reply.code(201).send({ evidence: created });
   });
 
+  const LinkEvidenceBody = z.object({ contractEvidenceId: z.string().min(1) });
+
+  // Records the on-chain evidence id once the frontend's submit_evidence
+  // write confirms. This row's contentHashSha256 was already computed at
+  // off-chain submission time and is what the wallet-signed on-chain call
+  // commits — this endpoint just closes the loop so the UI can show
+  // "on-chain" status instead of implying evidence exists on-chain when it
+  // only ever hit this API.
+  app.patch("/evidence/:id/link-contract", { onRequest: [app.authenticate] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = LinkEvidenceBody.parse(req.body);
+    const { sub: userId } = req.user as { sub: string };
+
+    const [existing] = await db.select().from(evidence).where(eq(evidence.id, id)).limit(1);
+    if (!existing) return reply.code(404).send({ error: "Evidence not found" });
+    if (existing.submittedByUserId !== userId) {
+      return reply.code(403).send({ error: "Only the submitter can link this evidence on-chain" });
+    }
+
+    const [updated] = await db
+      .update(evidence)
+      .set({ contractEvidenceId: body.contractEvidenceId })
+      .where(eq(evidence.id, id))
+      .returning();
+
+    return { evidence: updated };
+  });
+
   app.get("/cases/:caseId/evidence", async (req) => {
     const { caseId } = req.params as { caseId: string };
     const rows = await db.select().from(evidence).where(eq(evidence.caseId, caseId));
