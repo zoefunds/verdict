@@ -476,3 +476,49 @@ distinct on-chain argument-mapping bug found this way (after the
 stringified `required_stake_wei` and the ignored per-case appeal-bond
 field), all three only surfaced by reading a real failed StudioNet
 transaction's decoded params/stderr, not from code review alone.
+
+## Final staleness audit (2026-08-25, continued)
+
+User asked explicitly to confirm nothing is stale end to end. Found one
+more real bug and closed the remaining gaps:
+
+- **The actual staleness bug**: `CaseLifecycleActions.tsx` computes
+  `nowSec = Date.now()` inline at render time and compares it against
+  on-chain deadlines. React Query does structural sharing — if a poll's
+  fetched data deep-equals the previous result, the query keeps the SAME
+  object reference specifically to avoid a re-render. That means a
+  deadline passing with zero on-chain activity (nobody has to submit a
+  transaction for wall-clock time to elapse) would never flip the UI from
+  "window still open" to "action now available" — `refetchInterval` alone
+  only helps when the fetched *values* actually change. Fixed with an
+  independent `setInterval` (20s) that forces a re-render via a dummy tick
+  state, decoupled from data-change-triggered re-renders.
+- Added `refetchInterval` to every remaining un-watched query:
+  `useCaseEvidence` (15s — the other party's evidence appears with zero
+  action on this user's end), `useMyCases` (20s — dashboard), `useCasebook`
+  (30s), `useProtocolMetrics` (30s). Combined with the previous pass's
+  `useCase`/`useContractCase` (15s) and the existing notification-bell
+  poll (30s), every read surface in the app now self-updates.
+- Verified no read path bypasses the rate-limited backend proxy: grepped
+  for `createClient`/`genlayer-js` usage across both frontend and backend
+  — only `frontend/lib/genlayer.ts` (writes, correctly direct-to-wallet)
+  and `backend/src/lib/genlayer-client.ts` (reads, correctly routed
+  through the Redis-coordinated rate limiter) import it. No leaks.
+- Verified `fund_respondent_stake`'s payable value
+  (`c.stakeAmountWei` from Postgres, not a fresh on-chain read) is safe
+  despite being off-chain-sourced: it's set once at `create_case` time
+  from the exact same value and is immutable on the contract afterward —
+  no drift is possible, so this isn't a staleness risk despite reading
+  from the DB rather than `onChainCase`.
+
+**Known, deliberately-accepted scaling caveat** (not fixed, just flagged
+honestly): the indexer's poll cycle cost scales as `1 + case_count` RPC
+calls every 15s. At current test scale (1-2 cases) that's well within the
+shared 25/min Redis-coordinated budget. Once case count grows past
+roughly 5-6 concurrently-open cases, the indexer alone could approach or
+exceed the budget even before counting frontend tabs' own polling — this
+was already flagged in the original rate-limiting design notes
+(`backend/src/indexer/poll.ts` module comment) as needing pagination/
+backoff at scale, and remains true after this audit. Not addressed now
+since it's out of scope for "is anything ACTUALLY stale right now" at the
+app's current real usage level.
