@@ -171,3 +171,84 @@ memory system) so it travels with the repo.
   same Reown Project ID). Frontend `next build` passes clean with this.
 - Production frontend URL: **https://ver-dict.vercel.app** — backend
   `CORS_ORIGIN` (`backend/fly.toml`) is locked to this origin.
+- Every `flyctl`/`vercel`/`npm` command in this project must be run with an
+  explicit `cd` into the right subdirectory in the SAME shell invocation —
+  the tool's cwd has repeatedly reset to the repo root between calls in
+  this environment, causing real mistakes (an accidental `vercel link` from
+  `backend/`, a `flyctl deploy` that failed with "no Dockerfile" because it
+  ran from the repo root). Always `cd /Users/macbook/verdict/<dir> && <cmd>`
+  in one command.
+
+## Live end-to-end test findings (2026-08-25) — case creation flow
+
+User walked the real Create Case flow on the deployed app and found three
+real gaps, all fixed and redeployed:
+
+1. **Constitution picker was empty** — Postgres had never been seeded with
+   any constitution row, even though the contract has a genesis one
+   on-chain. Fixed: `backend/src/db/seed.ts` (`npm run db:seed`), seeded
+   both locally and in production.
+2. **No CTA to actually publish a case on-chain** — the wizard created an
+   off-chain DRAFT row and just said "ready to submit your stake," but no
+   button anywhere ever called the contract's `create_case`. Cases were
+   permanently stuck in DRAFT. Fixed: `frontend/hooks/usePublishCaseOnChain.ts`
+   (shared by the wizard success screen and a new case-detail draft-state
+   CTA) — reads case count (case ids are sequential, so count-before-tx =
+   new id), submits the wallet-signed `create_case` tx, verifies the
+   resulting on-chain case's claimant matches before linking (guards
+   against a race if another case is created concurrently), then calls
+   `PATCH /cases/:id/link-contract`.
+3. **No way to name a respondent** — the contract's `create_case` requires
+   a `respondent_address` parameter (VERDICT has no "open to anyone"
+   respondent concept), but the wizard never collected one. Fixed: added a
+   required "Respondent Wallet Address" field to the wizard, a new
+   `cases.respondent_address` column (nullable at the DB level to avoid
+   breaking the pre-existing test draft row, required at the API/zod
+   level for all new cases), and a get-or-create respondent user +
+   `case_participants` row at creation time.
+
+Also fixed while wiring #2: `lib/genlayer.ts`'s `createCase`/
+`submitEvidenceOnChain` signatures didn't actually match the deployed
+contract's real parameters (they were written before the contract was
+finalized and never reconciled) — corrected to the real
+`create_case(respondent_address, title, claim_text, required_stake_wei,
+evidence_window_seconds, respondent_join_window_seconds)` and
+`submit_evidence(case_id, kind, url, description, tx_reference)` shapes.
+Added `PATCH /cases/:id/fund-respondent` so the respondent's stake-lock
+timestamp is recorded off-chain too (previously only the case's overall
+status would eventually catch up via the indexer, leaving the
+per-participant "Locked" indicator permanently wrong). Gated the evidence
+submission form to only render during `evidence_window`/`re_investigation`
+status, matching the contract's own enforcement.
+
+## Full page audit (2026-08-25)
+
+Went through every route looking for dead buttons / unwired data:
+
+- **Verdict was never shown anywhere** — the whole point of a resolved
+  case. Added `frontend/components/case/VerdictCard.tsx` +
+  `useContractCase` hook, reading outcome/split/confidence/reasoning
+  directly from the on-chain `get_case` (source of truth), on both the
+  authenticated and public case detail pages.
+- **Casebook "Highest stake" / "Most appealed" sort buttons were dead** —
+  backend always ignored the `sort` param. Fixed `highest_stake` (real,
+  DB-backed). `most_appealed` is now correctly implemented (LEFT JOIN
+  count against `appeals`) but will read as ties until an appeals-event
+  indexing job exists — the indexer currently only mirrors case *status*,
+  not individual appeal events. Not fabricated, just not yet fed.
+- **Wallet page ignored the fact the contract is now deployed** — showed
+  nothing about collateral. Added a real "Case Collateral" summary from
+  the user's own cases (honestly labeled as combined stake terms, not
+  claimed as "your locked GEN specifically," since that would require a
+  participant-level fetch per case this page doesn't do).
+- **Profile editing and Notifications were honest "not yet implemented"
+  stubs with no backend support.** Implemented both for real: `PATCH
+  /auth/me` (displayName/bio) wired into an inline edit form on Profile;
+  `GET /notifications` + `PATCH /notifications/:id/read` wired into a real
+  Notifications page plus an unread-count bell in `AppTopbar`.
+  Notification rows are now actually created at the two most impactful
+  trigger points (case opened -> notify respondent, respondent funded ->
+  notify claimant) — other trigger points (evidence submitted, verdict
+  rendered, appeal filed) still don't create notifications yet, so the
+  `notification_type` enum has entries with no producer; that's the next
+  gap if this needs to feel fully alive.
