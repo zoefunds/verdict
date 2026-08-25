@@ -121,7 +121,12 @@ export default function AppealPage() {
           </CardContent>
         </Card>
 
-        <EvidenceSubmitForm caseId={c.id} contractCaseId={c.contractCaseId} isAppeal />
+        <EvidenceSubmitForm
+          caseId={c.id}
+          contractCaseId={c.contractCaseId}
+          isAppeal
+          canCommitOnChain={c.status === "re_investigation"}
+        />
       </div>
     </div>
   );

@@ -27,12 +27,22 @@ export function useCommitEvidenceOnChain() {
     setCommittingId(item.id);
     try {
       const kind = toContractKind(item.evidenceType);
+      // Same fix as EvidenceSubmitForm.tsx: TEXT_STATEMENT's actual
+      // content lives in `textContent`, not the optional `description`
+      // field — sending description alone silently drops it. Also capped
+      // at 2000 chars (contract's MAX_EVIDENCE_DESCRIPTION_LEN).
+      const onChainDescription =
+        kind === "TEXT_STATEMENT"
+          ? [item.textContent, item.description].filter(Boolean).join(" — ").slice(0, 2000)
+          : kind === "DOCUMENT_HASH"
+            ? (item.description || item.title).slice(0, 2000)
+            : (item.description ?? "").slice(0, 2000) || undefined;
       await genlayerContract.submitEvidenceOnChain({
         account,
         contractCaseId,
         kind,
         url: item.sourceUrl ?? undefined,
-        description: item.description ?? (kind === "DOCUMENT_HASH" ? item.title : undefined),
+        description: onChainDescription,
         txReference:
           kind === "TX_RECORD" ? (item.textContent ?? undefined) : kind === "DOCUMENT_HASH" ? item.contentHashSha256 : undefined,
       });

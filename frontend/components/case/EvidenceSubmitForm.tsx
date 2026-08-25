@@ -30,10 +30,22 @@ export function EvidenceSubmitForm({
   caseId,
   contractCaseId,
   isAppeal = false,
+  canCommitOnChain = true,
 }: {
   caseId: string;
   contractCaseId: string | null;
   isAppeal?: boolean;
+  /**
+   * Whether the case is actually in a status the contract's
+   * submit_evidence accepts (EVIDENCE_WINDOW or RE_INVESTIGATION) right
+   * now. Defaults to true for backward compatibility, but callers that
+   * know the case's current status (e.g. the appeal page, where the case
+   * sits in APPEALED until "Open Appeal Evidence Window" is clicked)
+   * should pass this explicitly — otherwise the on-chain commit attempts
+   * a submit_evidence call that reverts with "case is not currently
+   * accepting evidence" (confirmed from a real failed StudioNet tx).
+   */
+  canCommitOnChain?: boolean;
 }) {
   const { isAuthenticated } = useAuth();
   const { address } = useAccount();
@@ -48,16 +60,38 @@ export function EvidenceSubmitForm({
   const [onChainStatus, setOnChainStatus] = useState<string | null>(null);
 
   async function submitOnChain(created: Evidence) {
-    if (!genlayerContract.isDeployed || !contractCaseId || !address) return;
+    if (!genlayerContract.isDeployed || !contractCaseId || !address || !canCommitOnChain) {
+      if (!canCommitOnChain && genlayerContract.isDeployed && contractCaseId) {
+        setOnChainStatus(
+          "Saved off-chain only — this case isn't currently accepting on-chain evidence (e.g. an appeal evidence window may need to be opened first). You can commit it on-chain once it is.",
+        );
+      }
+      return;
+    }
     setOnChainStatus("Confirm the on-chain evidence commit in your wallet…");
     try {
       const contractKind = toContractKind(kind);
+      // The contract's `description` field is the only free-text slot for
+      // TEXT_STATEMENT evidence — there's no separate "content" parameter.
+      // The optional "Description" field in this form was previously sent
+      // alone, silently dropping the actual statement text (`textContent`)
+      // that the user typed into "Content" — confirmed from a real
+      // StudioNet transaction whose decoded params showed an empty
+      // description for a text_statement submission. Also capped at 2000
+      // chars: the contract's MAX_EVIDENCE_DESCRIPTION_LEN rejects
+      // anything longer (off-chain storage keeps the untruncated text).
+      const onChainDescription =
+        kind === "text_statement"
+          ? [textContent, description].filter(Boolean).join(" — ").slice(0, 2000)
+          : kind === "file"
+            ? (description || title).slice(0, 2000)
+            : (description ?? "").slice(0, 2000) || undefined;
       await genlayerContract.submitEvidenceOnChain({
         account: address,
         contractCaseId: Number(contractCaseId),
         kind: contractKind,
         url: kind === "url" ? sourceUrl : undefined,
-        description: description || (kind === "file" ? title : undefined),
+        description: onChainDescription,
         txReference:
           kind === "transaction_record" ? textContent : kind === "file" ? created.contentHashSha256 : undefined,
       });
@@ -144,6 +178,12 @@ export function EvidenceSubmitForm({
         <p className="text-body-sm text-tertiary">
           This case hasn&apos;t been published on-chain yet — evidence will be saved here but not committed
           on-chain until it has.
+        </p>
+      ) : !canCommitOnChain ? (
+        <p className="text-body-sm text-tertiary">
+          This case isn&apos;t currently accepting on-chain evidence
+          {isAppeal ? ' — open the "Appeal Evidence Window" above first' : ""}. Evidence will be saved here
+          and can be committed on-chain once it is.
         </p>
       ) : (
         <p className="text-body-sm text-on-surface-variant">
