@@ -21,6 +21,7 @@ import { casesApi } from "@/lib/api";
 import { formatWei, formatDateTime } from "@/lib/utils";
 import { useAccount } from "wagmi";
 import { useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "@/hooks/useAuth";
 
 export default function CaseDetailsPage() {
   const params = useParams<{ id: string }>();
@@ -30,6 +31,7 @@ export default function CaseDetailsPage() {
   const { state, run } = useTransaction();
   const { state: publishState, publish } = usePublishCaseOnChain();
   const { address } = useAccount();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
 
   if (isLoading) {
@@ -55,6 +57,10 @@ export default function CaseDetailsPage() {
 
   const { case: c, participants } = data;
   const inAppealWindow = c.status === "appeal_window";
+  const isRespondent = Boolean(
+    address && c.respondentAddress && address.toLowerCase() === c.respondentAddress.toLowerCase(),
+  );
+  const isClaimant = Boolean(user && user.id === c.createdByUserId);
   const evidence = evidenceData?.evidence ?? [];
 
   async function handleFundStake() {
@@ -157,20 +163,32 @@ export default function CaseDetailsPage() {
           {c.status === "awaiting_respondent_stake" && (
             <Card>
               <CardContent className="space-y-3 p-6">
-                <p className="text-body-sm text-on-surface-variant">
-                  This case is awaiting the respondent&apos;s matching collateral to open the evidence window.
-                </p>
-                {!genlayerContract.isDeployed ? (
-                  <div className="rounded border border-tertiary/40 bg-tertiary/10 p-4 text-body-sm text-tertiary">
-                    Contract not yet deployed — the on-chain stake transaction cannot be submitted until
-                    NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS is configured.
-                  </div>
+                {isRespondent ? (
+                  <>
+                    <p className="text-body-sm text-on-surface-variant">
+                      This case was opened against you. Fund your matching collateral to open the evidence
+                      window.
+                    </p>
+                    {!genlayerContract.isDeployed ? (
+                      <div className="rounded border border-tertiary/40 bg-tertiary/10 p-4 text-body-sm text-tertiary">
+                        Contract not yet deployed — the on-chain stake transaction cannot be submitted until
+                        NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS is configured.
+                      </div>
+                    ) : (
+                      <Button onClick={handleFundStake} disabled={state.status === "wallet-confirm" || state.status === "pending"}>
+                        Fund Respondent Stake ({formatWei(c.stakeAmountWei)} GEN)
+                      </Button>
+                    )}
+                    <TxStateNote state={state.status} />
+                  </>
                 ) : (
-                  <Button onClick={handleFundStake} disabled={state.status === "wallet-confirm" || state.status === "pending"}>
-                    Fund Respondent Stake ({formatWei(c.stakeAmountWei)} GEN)
-                  </Button>
+                  <p className="text-body-sm text-on-surface-variant">
+                    Waiting on the respondent (
+                    <span className="font-mono text-on-surface">{c.respondentAddress}</span>) to fund their
+                    matching collateral before the evidence window opens.
+                    {isClaimant && " Only they can complete this step — your stake is already locked."}
+                  </p>
                 )}
-                <TxStateNote state={state.status} />
               </CardContent>
             </Card>
           )}
