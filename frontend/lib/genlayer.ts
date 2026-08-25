@@ -115,7 +115,13 @@ export const genlayerContract = {
         args.respondentAddress,
         args.title,
         args.claimText,
-        args.requiredStakeWei.toString(),
+        // Must stay a bigint/number, NOT .toString() — genlayer-js maps a
+        // JS string arg to a Python str on the GenVM side, and the
+        // contract does `required_stake_wei >= int(self.min_stake_wei)`,
+        // which raises TypeError: '>=' not supported between 'str' and
+        // 'int' if this arrives as text. Confirmed against a real failed
+        // StudioNet transaction (contract.py line 651) before this fix.
+        args.requiredStakeWei,
         args.evidenceWindowSeconds,
         args.respondentJoinWindowSeconds ?? 14 * 24 * 60 * 60,
       ],
