@@ -191,8 +191,14 @@ not a simulator, not mocked. Every write reached `FINALIZED` /
 markers (a validator whose vote was cancelled after quorum was already
 reached — `fatal: false`, not a real failure). Real GEN moved on
 settlement, confirmed by checking both accounts' balances before and
-after. Full write-up: `docs/SECURITY.md` → "Live end-to-end lifecycle
-audit".
+after. The resulting case (`VX-5961`) is fully synced end to end and
+visible right now at
+[ver-dict.vercel.app/casebook](https://ver-dict.vercel.app/casebook) with
+real status `settled` and its real evidence item. Full write-up, including
+three real bugs this testing found and fixed (a StudioNet daily RPC quota
+silently starving the indexer, a metrics undercounting bug, and an
+evidence-visibility gap from testing evidence submission directly
+on-chain): `docs/SECURITY.md` → "Live end-to-end lifecycle audit".
 
 To repeat this yourself: connect a funded StudioNet wallet at
 [ver-dict.vercel.app](https://ver-dict.vercel.app), or use the
@@ -245,6 +251,12 @@ off exponentially (up to 30 minutes) on consecutive failures instead of
 retrying at a fixed rate forever. If you see cases stuck showing a stale
 status on the frontend, check `flyctl logs --app verdict-backend | grep
 indexer` for this signature before assuming something else is wrong.
+Confirmed working as intended: the indexer that got caught in this during
+development recovered on its own once StudioNet's daily window rolled
+over, with no manual intervention — it logged `[indexer] recovered after
+N consecutive failed cycle(s)` and the affected case's status caught up
+to `settled` in Postgres on the very next successful cycle, no replay of
+intermediate states needed.
 
 ## Documentation map
 

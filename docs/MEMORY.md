@@ -783,3 +783,36 @@ verify-in-this-order checklist, updated `contracts/README.md` with the
 full v1/v2/v3 version history and the `genlayer write` payable-value
 limitation, and rewrote `tests/contract/README.md`'s "not covered" section
 since most of what it listed as uncovered had since been covered live.
+
+## Closing the loop: evidence backfill + indexer recovery, both confirmed
+
+Two threads closed out for real after the doc pass above:
+
+- User noticed the E2E test case's evidence timeline was empty on the
+  frontend. Root cause: the live lifecycle test submitted evidence
+  directly on-chain via `genlayer-js` to isolate testing contract
+  consensus, never going through the app's own `POST /evidence/text` →
+  `PATCH /evidence/:id/link-contract` flow — so real, correct on-chain
+  evidence had no Postgres row to be read from. Wrote
+  `backend/src/db/backfill_test_evidence.ts` to backfill exactly the row
+  that flow would have created, using real on-chain values (hash,
+  description, the genuine `content_hash_matched: false` outcome recorded
+  honestly as `status: "verification_failed"`, not glossed over as
+  verified). **Hit a real gotcha writing it**: `users.walletAddress` is
+  stored checksummed (mixed-case), not lowercase — first attempt queried
+  lowercase and found nothing. Confirmed by dumping the actual `users`
+  table rows rather than guessing at the format. Fixed and backfill
+  succeeded on retry.
+- The indexer's StudioNet daily-quota backoff (from the earlier fix)
+  recovered entirely on its own with zero manual intervention — confirmed
+  by polling the case's API endpoint hours later and seeing
+  `"status": "settled"` with a `settledAt` matching the real on-chain
+  settlement timestamp exactly. This is the strongest real-world
+  confirmation yet that `syncOneCase`'s "just overwrite to current
+  on-chain status" design is correct even after an extended outage, not
+  just for routine gaps.
+
+Both are now documented with their FINAL confirmed state (not
+"should work once X happens") across README.md, docs/SECURITY.md, and
+docs/GENLAYER.md, per the user's explicit ask for "real detailed latest
+information," not projected/expected outcomes.

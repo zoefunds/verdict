@@ -332,7 +332,17 @@ via `genlayer schema` and diffed line-by-line against every call site in
 every return shape, every status enum matched exactly before any live
 transaction was sent.
 
-### Two real bugs found live, both fixed and deployed
+**Final confirmed state (2026-08-25, after indexer recovery):** the
+indexer recovered on its own once StudioNet's daily window rolled over,
+exactly as the backoff fix intended — no further intervention needed.
+`GET /cases/05935c6f-709d-4943-a94a-922b9b8d4c06` now returns
+`"status": "settled"`, `"settledAt": "2026-08-25T19:31:10.519Z"`, matching
+the real on-chain settlement time exactly, with both real participant
+rows (claimant `stakeTxHash: 0xfe36...a3154`, respondent) intact. This is
+case `VX-5961` — visible end to end at
+[ver-dict.vercel.app/casebook](https://ver-dict.vercel.app/casebook).
+
+### Three real bugs found live, all fixed and deployed
 
 1. **Indexer silently starved by an undocumented daily RPC quota.**
    StudioNet enforces a hard **5,000 requests/day** cap, entirely separate
@@ -380,17 +390,41 @@ transaction was sent.
    (`frontend/app/(app)/dashboard/page.tsx`). Left unfixed rather than
    forcing an immediate contract redeploy for a cosmetic metric — flagged
    here for a future fix alongside other contract changes.
+3. **Real on-chain evidence with no matching Postgres row, because it was
+   submitted directly on-chain rather than through the app's normal
+   flow.** To isolate testing the contract's own consensus behavior, the
+   test evidence was committed via `genlayer-js` calling `submit_evidence`
+   directly — bypassing the app's usual `POST /evidence/text` (which
+   fetches/hashes content and writes the DB row *first*) → wallet-signed
+   on-chain commit → `PATCH /evidence/:id/link-contract` sequence
+   entirely. The result was real and correct on-chain (`get_evidence`
+   confirmed it: hash, submitter, independent re-fetch, everything), but
+   invisible in the frontend's evidence timeline, which reads Postgres,
+   not the chain directly. Backfilled with a one-off script
+   (`backend/src/db/backfill_test_evidence.ts`) using the real on-chain
+   values — not placeholders — including the genuine
+   `content_hash_matched: false` outcome, recorded honestly as
+   `status: "verification_failed"` rather than glossed over. **A real
+   gotcha hit while writing that script**: `users.walletAddress` is stored
+   **checksummed** (mixed-case), not lowercase — the first backfill
+   attempt queried the lowercase form and found no matching user row.
+   Fixed by querying the exact checksummed address. Worth remembering for
+   any future script that looks up a user by wallet address.
 
-### Frontend visibility
+### Frontend visibility — confirmed, not just expected
 
 The case created during this run (case number `VX-5961`, contract case id
 `0`) went through the real API — real SIWE-style auth (nonce issued,
 signed with the test account's key, verified), real `POST /cases`, real
 `PATCH /cases/:id/link-contract` — so it is a completely ordinary case
-row, indistinguishable from one created by a real user through the UI. It
-is visible at [ver-dict.vercel.app/casebook](https://ver-dict.vercel.app/casebook)
-once the indexer catches its status up to `settled` (see bug #1 above for
-why that lagged during the test itself).
+row, indistinguishable from one created by a real user through the UI.
+**Confirmed live, after the indexer's own recovery**: `GET
+/cases/05935c6f-709d-4943-a94a-922b9b8d4c06` returns `status: "settled"`
+with a `settledAt` matching the real on-chain settlement transaction, and
+`GET /cases/05935c6f-709d-4943-a94a-922b9b8d4c06/evidence` returns the
+backfilled evidence row from bug #3 above. Both are visible on
+[ver-dict.vercel.app/casebook](https://ver-dict.vercel.app/casebook) as of
+this writing.
 
 ## Known gaps / follow-up before real-value production use
 

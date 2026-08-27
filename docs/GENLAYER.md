@@ -92,7 +92,24 @@ stretches — cases and case status can silently stop updating on the
 frontend with no user-visible error if this regresses. Fixed by raising
 the poll interval to 60s AND adding the daily budget tracker above, so a
 future regression fails loudly (`GenLayer RPC daily budget exhausted`)
-instead of silently starving the indexer.
+instead of silently starving the indexer. Also added exponential backoff
+in `backend/src/indexer/run.ts` (60s → 30 minutes on consecutive sync
+failures, reset to 60s on the next success) — a blind fixed-interval
+retry loop kept hammering the RPC at the same rate even while every call
+was being rejected, which risks perpetuating its own exhaustion if
+rejected calls still count against the daily counter (plausible, since
+StudioNet has to receive and evaluate a request to reject it).
+
+**Confirmed recovering correctly in production, not just in theory:** the
+indexer machine that hit this during development recovered entirely on
+its own once StudioNet's daily window rolled over — no restart, no manual
+intervention. It logged `[indexer] recovered after N consecutive failed
+cycle(s)`, and the one case affected during the outage (`VX-5961`) had its
+Postgres status jump straight from a stale `awaiting_respondent_stake` to
+the real current on-chain `settled` in a single subsequent sync cycle —
+confirming `syncOneCase`'s design (overwrite to current on-chain status,
+never replay intermediate states) works exactly as intended after an
+extended outage, not just for routine polling gaps.
 
 ## Current status
 
