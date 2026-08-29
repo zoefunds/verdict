@@ -132,23 +132,47 @@ was lost to an external file-sync revert and only reapplied after v2 was
 already live. Retired in favor of v3 below rather than left mismatched
 with checked-in source.
 
-**v3 deployed and wired in:** `0xD570c9bA2B68b10d0c86EDD9Fc5B384c9ecD7185`
-is the current production contract, wired into the Fly.io backend
-(`VERDICT_CONTRACT_ADDRESS` secret), the indexer, and the Vercel frontend
+**Superseded deployment (retired):** `0xD570c9bA2B68b10d0c86EDD9Fc5B384c9ecD7185`
+("v3") was deployed, wired in, and verified end-to-end (see "Live
+end-to-end lifecycle audit" in `docs/SECURITY.md`) — retired when a fresh
+contract address ("v4") was deployed alongside a full database reset for
+a clean multi-product testing round. No functional changes between v3 and
+v4; `submit_evidence`'s signature and every other method are identical.
+The frontend deployment for v3 was verified by locally rebuilding with the
+matching `.env.local` and grepping the actual `.next` client bundle for
+the new address (found in `layout` and `casebook/page` chunks, old address
+absent), then confirming the same address appeared in the live served
+bundle at `ver-dict.vercel.app` — not just assumed from the env var being
+set, since a prior round's Vercel env var silently held an empty string
+despite `vercel env add` reporting success. The same verification method
+was repeated for v4.
+
+**v4 deployed and wired in (current):**
+`0x2BEe5eBb18c8E0D82E68Fc103fA68dfC0e876E58` is the current production
+contract, wired into the Fly.io backend (`VERDICT_CONTRACT_ADDRESS`
+secret), the indexer, and the Vercel frontend
 (`NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS`). Verified against real StudioNet
-state via the `genlayer` CLI (not assumed from source): `genlayer schema
-0xD570c9...` confirms the contract loads and `submit_evidence`'s
-parameter list matches `[case_id, kind, url, description, tx_reference,
-content_hash]`, `genlayer call 0xD570c9... get_protocol_config` returns
-live config, and `get_case_count` returns `0` (fresh deployment, no case
-data to carry forward or clear this time). The frontend deployment was
-verified by locally rebuilding with the matching `.env.local` and
-grepping the actual `.next` client bundle for the new address (found in
-`layout` and `casebook/page` chunks, old address absent), then confirming
-the same address appears in the live served bundle at
-`ver-dict.vercel.app` — not just assumed from the env var being set,
-since a prior round's Vercel env var silently held an empty string
-despite `vercel env add` reporting success.
+state via the `genlayer` CLI before any test transaction: `genlayer schema
+0x2BEe5e...` confirmed the contract loads and every method's parameter
+list matches checked-in source exactly, `genlayer call 0x2BEe5e...
+get_protocol_config` returned live config, and `get_case_count` returned
+`0` (fresh deployment). All prior-contract case/evidence/participant data
+was cleared from Postgres before testing began
+(`backend/src/db/clear_all_cases.ts`), per the request that prompted this
+round.
+
+Every non-admin read and write method was then exercised against v4
+across 4 independent, fully-detailed product-dispute test cases (real
+claim/evidence text, not placeholders) — full write-up in
+`docs/SECURITY.md` "Multi-product live lifecycle audit". Two
+`render_verdict`/`resolve_appeal` calls genuinely hit `MAJORITY_DISAGREE`
+after exhausting all leader rotations (a real consensus split, not a bug)
+and succeeded on a same-script retry with a fresh leader/validator draw.
+The 4 resulting cases (3 settled, 1 cancelled) were, once again, created
+by calling the contract directly rather than through the app's normal
+`POST /cases` flow — so they needed the same kind of Postgres backfill as
+the v3 evidence-visibility gap before appearing on the frontend; see
+`backend/src/db/backfill_e2e_test_cases.ts`.
 
 ### SDK version note
 

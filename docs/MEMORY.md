@@ -816,3 +816,48 @@ Both are now documented with their FINAL confirmed state (not
 "should work once X happens") across README.md, docs/SECURITY.md, and
 docs/GENLAYER.md, per the user's explicit ask for "real detailed latest
 information," not projected/expected outcomes.
+
+## v4 contract + multi-product live lifecycle audit (2026-08-29)
+
+New contract `0x2BEe5eBb18c8E0D82E68Fc103fA68dfC0e876E58` ("v4") wired in
+after user request: clear all prior-contract DB data, then run every
+non-admin read/write method through 4 independent, fully-detailed product
+tests. Full technical write-up in `docs/SECURITY.md` "Multi-product live
+lifecycle audit" — summary of what's worth remembering:
+
+- Flagged the `claim_case_abandonment` 14-day hard-coded grace period to
+  the user BEFORE starting, rather than silently skipping it or trying to
+  fake it — got explicit agreement to skip it. Asking first here mattered:
+  it's the kind of thing that looks like an oversight if discovered after
+  the fact instead of disclosed upfront.
+- 4 real, distinct dispute scenarios (freelance payment, rental deposit,
+  contract cancellation, e-commerce partial refund) with genuinely
+  different evidence and outcomes — not 4 copies of the same test with
+  different names. One (`add_case_rule` test) got the LLM to explicitly
+  cite the added case rule by name in its verdict reasoning — real
+  confirmation the mechanism works, not just that the call doesn't error.
+- **The v3 round's evidence-visibility gap repeated at case-level, and
+  this time it's clearly a pattern, not a one-off**: testing by calling
+  the contract directly (for precise scriptable control) always bypasses
+  the app's DB-writing flow, so it will ALWAYS need a backfill step
+  afterward. Documented this explicitly in SECURITY.md as a standing note
+  for future rounds, not something to silently rediscover each time.
+- Real consensus behavior observed twice: `MAJORITY_DISAGREE` after
+  exhausting all 3 leader rotations, resolved by simply retrying the same
+  call for a fresh leader/validator draw. This is expected GenVM behavior,
+  not a bug — worth remembering so a future session doesn't panic and
+  start "fixing" something that isn't broken.
+- Real timing constraint found: evidence/appeal windows have a **hard
+  1-hour minimum enforced on-chain** regardless of what's requested — a
+  short-window request doesn't error, it silently floors to 1 hour. This
+  meant every appealed test case had a real ~1-hour wait before
+  `resolve_appeal` became callable; scheduled wakeups (not fixed sleeps)
+  were used to avoid busy-waiting during each wait.
+- **This exact README-update step was initially skipped and had to be
+  redone after the user flagged it.** The pattern going forward: any
+  contract redeployment or major testing round needs README.md +
+  docs/SECURITY.md + docs/GENLAYER.md + contracts/README.md +
+  docs/DEPLOYMENT.md all touched, not just SECURITY.md/MEMORY.md — the
+  user has now had to ask twice for the full doc set to be kept current
+  after a round like this, so treat "update the docs" as implicitly
+  including README.md every time, not just the audit trail files.

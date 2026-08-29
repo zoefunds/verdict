@@ -88,7 +88,7 @@ the new schema.
 the full, current deployment walkthrough (prerequisites, `genlayer deploy`
 invocation, verification steps, and how to obtain the resulting contract
 address). Current production address:
-`0xD570c9bA2B68b10d0c86EDD9Fc5B384c9ecD7185` ("v3" — see
+`0x2BEe5eBb18c8E0D82E68Fc103fA68dfC0e876E58` ("v4" — see
 `contracts/README.md` for what changed across versions).
 
 Once you have a new address, wire it into:

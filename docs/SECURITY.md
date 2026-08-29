@@ -426,6 +426,133 @@ backfilled evidence row from bug #3 above. Both are visible on
 [ver-dict.vercel.app/casebook](https://ver-dict.vercel.app/casebook) as of
 this writing.
 
+## Multi-product live lifecycle audit (2026-08-29, v4 contract)
+
+Requested explicitly: clear all prior-contract data, deploy against the
+new v4 contract (`0x2BEe5eBb18c8E0D82E68Fc103fA68dfC0e876E58`), and run
+every non-admin read/write method through 4 independent, fully-detailed
+("not placeholder") product dispute scenarios, with zero tolerance for
+GenVM/consensus errors, visible on the frontend afterward.
+
+### Setup
+
+Database fully cleared of prior-contract cases/evidence/participants
+(`backend/src/db/clear_all_cases.ts`) before any testing began. The v4
+contract was verified against checked-in source via `genlayer schema`
+before sending any transaction — schema matched exactly, zero drift. The
+same two dedicated StudioNet test accounts from the v3 round were reused
+(`verdict-test`, `verdict-test-2`), alternating claimant/respondent roles
+across the four tests for direction diversity.
+
+### Four tests, four different real disputes
+
+1. **Freelance payment dispute** — a web-design contractor suing for an
+   unpaid final milestone. Initial verdict: `CLAIMANT`, 80% confidence.
+   Respondent appealed with new evidence (unresolved warranty bug reports
+   within a contractual 30-day window) — the appeal **genuinely flipped
+   the outcome** to `RESPONDENT`, 72% confidence, with the LLM explicitly
+   noting the claimant's URL evidence had a hash mismatch and disregarding
+   it as unreliable. Exercised: `create_case`, `fund_respondent_stake`,
+   `submit_evidence` (URL + TEXT_STATEMENT), `close_evidence_window_early`,
+   `request_investigation`, `render_verdict`, `file_appeal`,
+   `open_appeal_evidence_window`, `resolve_appeal`, `settle_case`.
+2. **Rental security deposit dispute** — a tenant suing for a wrongfully
+   withheld deposit. `render_verdict`'s first attempt genuinely hit
+   `MAJORITY_DISAGREE` after all 3 leader rotations were exhausted — a
+   real consensus split, not a bug — and a retry with a fresh
+   leader/validator draw succeeded, landing `INCONCLUSIVE` (50/50) because
+   neither side's evidence was independently verifiable. Claimant appealed
+   with a countersigned property-management portal record addressing that
+   exact gap — the appeal resolved to a clean `CLAIMANT` win (full deposit,
+   82% confidence), citing both the newly-corroborated checklist and a
+   missed statutory deadline as independently sufficient grounds. Same
+   method coverage as test 1, plus multiple evidence rounds across the
+   appeal.
+3. **Design contract cancellation** — a claimant who created a case then
+   cancelled before the respondent funded their stake. Exercises
+   `create_case` and `cancel_case` specifically — the one test that never
+   reaches a verdict, by design, to cover the pre-funding exit path.
+4. **E-commerce partial refund dispute** — a buyer with a partially
+   defective product (one broken feature, otherwise functional), with a
+   case-specific rule added via `add_case_rule` mandating a proportional
+   partial refund for exactly this scenario. `render_verdict` correctly
+   landed `PARTIAL` (75/25 split favoring the buyer, 72% confidence) and
+   **explicitly cited the added case rule by name** in its reasoning —
+   real confirmation `add_case_rule` actually influences verdicts, not
+   just that it doesn't error. Seller appealed with the actual product
+   listing wording, arguing the disputed feature was a secondary "bonus"
+   spec, not a primary advertised one. The appeal's underlying LLM
+   reasoning genuinely shifted (citing a "70/30" split this time) but
+   **settlement-band snapping rounded it to the same 7500bps band as
+   before** — a real, notable confirmation that the discrete settlement-
+   band design absorbs small appeal-driven shifts within one band rather
+   than always producing a visibly different final number. Also exercised
+   `submit_evidence` with all three non-file kinds (URL, TEXT_STATEMENT,
+   TX_RECORD) across the two sides.
+
+Every write across all four tests reached `FINALIZED` consensus (with the
+two documented `MAJORITY_DISAGREE`-then-retry exceptions above, which are
+genuine consensus behavior, not errors). No other error class was
+observed. Real GEN moved correctly on every settlement and the
+cancellation refund.
+
+### Non-admin methods exercised (12 of 13)
+
+`create_case`, `fund_respondent_stake`, `submit_evidence`, `add_case_rule`,
+`close_evidence_window_early`, `request_investigation`, `render_verdict`,
+`file_appeal`, `open_appeal_evidence_window`, `resolve_appeal`,
+`settle_case`, `cancel_case`. **`claim_case_abandonment` was deliberately
+not exercised** — its `ABANDONMENT_GRACE_SECONDS` constant is a hard-coded
+14 days with no per-case or deploy-time override, making it infeasible to
+trigger for real within a normal testing session; this was surfaced to
+the user upfront and explicitly agreed to be skipped rather than silently
+omitted. Admin/owner-only methods (`set_appeal_bond_bps`, `set_paused`,
+`set_protocol_fee_bps`, `set_treasury_address`, `sweep_treasury`,
+`transfer_ownership`, `propose_constitution_amendment`) were out of scope
+per the request that prompted this round.
+
+### Real timing constraints discovered
+
+`evidence_window_seconds`, `respondent_join_window_seconds`, and
+`additional_evidence_window_seconds` (the appeal re-investigation window)
+all enforce a **hard 1-hour minimum on-chain** — passing a shorter value
+does not error, it silently floors to 1 hour. The initial evidence window
+can still be collapsed instantly via `close_evidence_window_early` (once
+both parties call it), but the re-investigation window during an appeal
+has no equivalent shortcut — each of the 3 appealed test cases genuinely
+waited out close to the full hour before `resolve_appeal` became callable.
+Separately, `APPEAL_WINDOW_SECONDS` (7 days, fixed, non-configurable) must
+fully elapse before `settle_case` succeeds on a case nobody appealed —
+confirmed by hitting the real on-chain rejection — which is why every test
+case that needed settlement went through a real appeal rather than waiting
+out 7 real days.
+
+### Frontend visibility gap, again — same root cause as before, now systematic
+
+All 4 cases were created by calling `create_case`/`submit_evidence`
+directly via `genlayer-js`, the same testing approach as the v3 round and
+for the same reason (precise, scriptable control over every parameter to
+exercise the contract's own consensus behavior exactly). This means all 4
+bypassed the app's normal `POST /cases` → wallet-signed on-chain tx →
+`PATCH /cases/:id/link-contract` flow again, leaving 4 real, correct,
+fully-settled/cancelled on-chain cases with zero matching Postgres rows —
+identical in kind to the single evidence-visibility gap from the v3 round,
+just at case-level and across all 4 cases this time, not one evidence
+item. Backfilled with `backend/src/db/backfill_e2e_test_cases.ts`, pulling
+every field (case data, all 13 evidence items across the 4 cases) live
+from the contract via `get_case`/`get_case_evidence_ids`/`get_evidence` —
+no placeholders. Confirmed live via the real API: 3 settled cases appear
+on [ver-dict.vercel.app/casebook](https://ver-dict.vercel.app/casebook)
+(the casebook's `RESOLVED_STATUSES` filter correctly excludes the
+cancelled case from public listing, by pre-existing design — it's still
+fully reachable directly by ID).
+
+**Note for future testing**: this is now a confirmed repeating pattern,
+not a one-off. Any future round that creates test cases by calling the
+contract directly (rather than through the frontend/API) will need this
+same backfill step — see the README's "Testing this yourself" section and
+consider that a standing note, not a surprise to rediscover each time.
+
 ## Known gaps / follow-up before real-value production use
 
 - [ ] Real local GenVM validator-consensus test run via `genlayer up`
@@ -457,3 +584,9 @@ this writing.
       per-case settlement, both confirmed correct), fixable alongside a
       future contract redeploy by also adding `attached` to
       `total_volume_wei` inside `create_case`.
+- [ ] `claim_case_abandonment` has never been exercised against a real
+      deployment — its 14-day `ABANDONMENT_GRACE_SECONDS` grace period is
+      hard-coded (not per-case or deploy-time configurable), making it
+      infeasible to trigger for real within a normal testing session. Would
+      need either a genuine multi-week test window or a contract change to
+      make the grace period configurable for a test/staging deployment.

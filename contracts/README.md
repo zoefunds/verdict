@@ -32,7 +32,7 @@ required 6th parameter, `content_hash`** (hex sha256 of the evidence's
 actual content — for URLs, the fetched page body, never the URL string).
 The constructor's signature was unchanged.
 
-**v3 (current)** — `0xD570c9bA2B68b10d0c86EDD9Fc5B384c9ecD7185`. Fixed a
+**v3** — `0xD570c9bA2B68b10d0c86EDD9Fc5B384c9ecD7185` (retired). Fixed a
 canonicalization bug from a second external audit round: v2's evidence
 content-hash truncated by *character* count before UTF-8 encoding, while
 the backend truncated by *byte* count — for non-ASCII content those could
@@ -56,7 +56,35 @@ fetch primitive to unify them against. This is why a hash mismatch has
 always been treated as a signal for the verdict LLM to weigh, never
 automatic proof of tampering — confirmed live: the real test case's
 evidence hash legitimately mismatched, and the LLM correctly reasoned
-about it as a weakening (not disqualifying) signal rather than erroring.
+about it as a weakening (not disqualifying) signal rather than erroring —
+and this pattern repeated identically across every v4 test case below, not
+just the one v3 case.
+
+**v4 (current)** — `0x2BEe5eBb18c8E0D82E68Fc103fA68dfC0e876E58`. No
+functional changes from v3 — this redeploy exists because the database was
+being reset for a clean multi-product test round (see
+`docs/SECURITY.md` "Multi-product live lifecycle audit") and a fresh
+contract address was deployed alongside it. `submit_evidence`'s signature
+and every other method are unchanged from v3; `genlayer schema` was used
+to confirm the deployed bytecode matches checked-in source exactly before
+any test transaction was sent. This is the address currently wired into
+production (backend, indexer, frontend).
+
+Every non-admin write and read method was exercised against v4 across 4
+independent, fully-detailed product-dispute test cases (not placeholder
+data) — see `docs/SECURITY.md` for the full write-up, including two
+genuine `MAJORITY_DISAGREE` consensus splits (each resolved on retry with
+a fresh leader/validator draw) and confirmation that `create_case`,
+`fund_respondent_stake`, `submit_evidence` (all three evidence kinds),
+`add_case_rule`, `close_evidence_window_early`, `request_investigation`,
+`render_verdict`, `file_appeal`, `open_appeal_evidence_window`,
+`resolve_appeal`, `settle_case`, and `cancel_case` all work correctly
+end to end. `claim_case_abandonment` was the sole method not exercised —
+its `ABANDONMENT_GRACE_SECONDS` constant (14 days) makes it infeasible to
+trigger for real within a normal testing session; admin/owner-only
+methods (`set_*`, `sweep_treasury`, `transfer_ownership`,
+`propose_constitution_amendment`) were out of scope per the request that
+prompted this round.
 
 ## Contents
 

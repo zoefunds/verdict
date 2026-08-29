@@ -23,7 +23,7 @@ DISAGREEMENT -> RULES -> COLLATERAL -> EVIDENCE -> GENLAYER INVESTIGATION -> VER
 |---|---|---|
 | Frontend | [ver-dict.vercel.app](https://ver-dict.vercel.app) | Live |
 | Backend API | `verdict-backend.fly.dev` | Live, always-on (Fly.io) |
-| Contract | `0xD570c9bA2B68b10d0c86EDD9Fc5B384c9ecD7185` (StudioNet) | Live — "v3" |
+| Contract | `0x2BEe5eBb18c8E0D82E68Fc103fA68dfC0e876E58` (StudioNet) | Live — "v4" |
 
 The contract has gone through several deployments as external audits found
 and fixed real issues (hash-truncation canonicalization, DNS-rebinding SSRF,
@@ -67,9 +67,10 @@ project owner, never automated** — see "Redeploying the contract" below.
    handles every GEN emission and reentrancy isn't a question that needs
    answering per call site.
 
-Every step above was verified against the live v3 contract with real
-StudioNet transactions during development — see "Testing this yourself"
-below and `docs/SECURITY.md` for the full audit trail.
+Every step above was verified against the live contract with real
+StudioNet transactions during development, across both the v3 and current
+v4 deployments — see "Testing this yourself" below and `docs/SECURITY.md`
+for the full audit trail.
 
 ## Stack
 
@@ -180,25 +181,48 @@ Key ones you'll need:
 
 ## Testing this yourself
 
-The full case lifecycle (`create_case` → `fund_respondent_stake` →
-`submit_evidence` → `request_investigation` → `render_verdict` →
-`file_appeal` → `open_appeal_evidence_window` → `resolve_appeal` →
-`settle_case`) was verified with **real signed transactions against the
-live v3 contract on StudioNet**, using two dedicated funded test accounts —
-not a simulator, not mocked. Every write reached `FINALIZED` /
-`MAJORITY_AGREE` consensus with zero genuine GenVM errors; the only
-"ERROR" entries observed were benign `CONSENSUS_VALIDATOR_QUORUM_REACHED`
-markers (a validator whose vote was cancelled after quorum was already
-reached — `fatal: false`, not a real failure). Real GEN moved on
-settlement, confirmed by checking both accounts' balances before and
-after. The resulting case (`VX-5961`) is fully synced end to end and
-visible right now at
-[ver-dict.vercel.app/casebook](https://ver-dict.vercel.app/casebook) with
-real status `settled` and its real evidence item. Full write-up, including
-three real bugs this testing found and fixed (a StudioNet daily RPC quota
-silently starving the indexer, a metrics undercounting bug, and an
-evidence-visibility gap from testing evidence submission directly
-on-chain): `docs/SECURITY.md` → "Live end-to-end lifecycle audit".
+Every non-admin read and write method on the live contract has been
+exercised with **real signed transactions on StudioNet**, across two
+rounds — not a simulator, not mocked:
+
+- **v3 round**: one full lifecycle (`create_case` → `fund_respondent_stake`
+  → `submit_evidence` → `request_investigation` → `render_verdict` →
+  `file_appeal` → `open_appeal_evidence_window` → `resolve_appeal` →
+  `settle_case`), plus `cancel_case`, using two dedicated funded test
+  accounts.
+- **v4 round** (current contract): **4 independent product-dispute
+  scenarios** run end to end with real, detailed claim/evidence text (a
+  freelance payment dispute, a rental deposit dispute, a contract
+  cancellation, and an e-commerce partial-refund dispute) — every one
+  distinct, none placeholder data. 3 of the 4 went through a full appeal
+  (`file_appeal` → `open_appeal_evidence_window` → `resolve_appeal`) with
+  new evidence submitted specifically to challenge the first verdict; one
+  exercised `cancel_case` instead. `add_case_rule` was exercised in one
+  case and the LLM verdict explicitly cited the added rule by name in its
+  reasoning. `claim_case_abandonment` was the one method deliberately not
+  exercised — its grace period is a hard-coded 14 days on-chain
+  (`ABANDONMENT_GRACE_SECONDS`), not feasible to wait out live.
+
+Across both rounds: every write reached `FINALIZED` consensus with zero
+genuine GenVM errors. Two `render_verdict`/`resolve_appeal` calls
+genuinely hit `MAJORITY_DISAGREE` after exhausting all leader rotations —
+a real consensus split, not a bug — and succeeded on a same-script retry
+with a fresh leader/validator draw. The only "ERROR"-labeled entries ever
+observed were benign `CONSENSUS_VALIDATOR_QUORUM_REACHED` markers
+(`fatal: false`) — a validator cancelled after quorum was already reached.
+Real GEN moved on every settlement, confirmed via account balances before
+and after.
+
+All resulting cases are fully synced end to end and visible right now at
+[ver-dict.vercel.app/casebook](https://ver-dict.vercel.app/casebook) —
+3 settled (public casebook only lists resolved disputes by design) plus
+one cancelled case reachable directly by ID. Full write-ups: `docs/SECURITY.md`
+→ "Live end-to-end lifecycle audit" (v3) and "Multi-product live lifecycle
+audit" (v4), including every real bug this testing found and fixed (a
+StudioNet daily RPC quota silently starving the indexer, a metrics
+undercounting bug, and two rounds of evidence/case-visibility gaps caused
+by testing directly against the contract instead of through the app's
+normal flow).
 
 To repeat this yourself: connect a funded StudioNet wallet at
 [ver-dict.vercel.app](https://ver-dict.vercel.app), or use the
