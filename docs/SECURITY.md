@@ -571,7 +571,9 @@ consider that a standing note, not a surprise to rediscover each time.
 - [ ] Formal external audit of `contracts/verdict_contract.py` before any
       non-testnet deployment.
 - [ ] Automated dependency vulnerability scanning (`npm audit` / Dependabot)
-      wired into CI once CI is set up.
+      — CI now exists (`.github/workflows/ci.yml`: contract tests,
+      backend lint/typecheck/test/build, frontend lint/typecheck/build on
+      every PR) but does not yet run a vulnerability scan step.
 - [ ] Structured centralized logging/monitoring on the Fly.io backend
       (currently `pino` structured logs only, no alerting pipeline yet).
 - [ ] Load testing of the polling indexer against a case volume beyond

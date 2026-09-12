@@ -861,3 +861,45 @@ lifecycle audit" — summary of what's worth remembering:
   user has now had to ask twice for the full doc set to be kept current
   after a round like this, so treat "update the docs" as implicitly
   including README.md every time, not just the audit trail files.
+
+## Engineering quality blockers fixed (2026-09-12)
+
+Three concrete gaps found by an external audit, all fixed and verified:
+
+- **Backend `eslint` had no config at all under ESLint 9** (which dropped
+  support for `.eslintrc.*` — needs a flat `eslint.config.js/mjs`). Added
+  `backend/eslint.config.mjs` using `typescript-eslint`'s flat preset,
+  deliberately without type-aware linting (kept fast, and avoids needing
+  every one-off `src/db/` maintenance script added to a tsconfig
+  `"project"` array — `tsc --noEmit` already covers type correctness
+  separately). Also cleaned up two now-unused `eslint-disable` comments and
+  one unused import that surfaced once linting actually ran.
+- **Frontend `next lint` failed** on a real unescaped apostrophe in
+  `app/(marketing)/page.tsx` (`contract's` in body copy) — one-line fix
+  (`&apos;`), confirmed clean afterward.
+- **Backend `npm test` failed outright — zero test files existed.** Added
+  real unit tests, not filler: `safe-fetch.test.ts` (SSRF IP-range
+  classification incl. IPv4-mapped IPv6 recursion, the HTML-to-visible-text
+  extractor, and the byte-vs-character truncation behavior that caused a
+  real hash-mismatch bug earlier this project), `indexer/poll.test.ts`
+  (asserts `CONTRACT_STATUS_TO_DB_STATUS` stays exhaustive against every
+  `STATUS_*` constant actually present in `verdict_contract.py`, parsed
+  live from the contract source — this fails loudly if a future contract
+  change adds a status the indexer doesn't know how to map, instead of the
+  indexer silently warn-and-skipping it in production), and
+  `evidence.test.ts` (the DB-enum-to-contract-`kind` mapping). Exported
+  `isPrivateOrReservedIp`, `extractVisibleText`, `CONTRACT_STATUS_TO_DB_STATUS`,
+  and `toContractKind` — all previously private/nested — specifically to
+  make them unit-testable; none of that changes runtime behavior. Hit one
+  real snag: importing `poll.ts`/`evidence.ts` transitively loads
+  `db/client.ts`, which throws at import time if `DATABASE_URL` is unset —
+  correct for the running app, but blocks unit-testing pure logic in those
+  files in an environment with no DB configured. Fixed with
+  `backend/vitest.config.ts` supplying a placeholder `DATABASE_URL` for the
+  test environment only (no test performs real I/O against it).
+- Added `.github/workflows/ci.yml`: contract's 19 deterministic tests,
+  backend lint/typecheck/test/build, frontend lint/typecheck/build, all on
+  every PR and push to `main`. Verified the frontend build step actually
+  works with placeholder `NEXT_PUBLIC_*` env vars (the values CI will use,
+  since it never contacts a real backend/contract) before trusting the
+  workflow file, not just assumed from writing it.

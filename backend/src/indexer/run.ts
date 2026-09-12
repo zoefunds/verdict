@@ -27,7 +27,6 @@ const MAX_BACKOFF_MS = 30 * 60_000;
 
 async function loop() {
   let consecutiveFailures = 0;
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     const start = Date.now();
     let succeeded = false;

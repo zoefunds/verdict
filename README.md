@@ -1,5 +1,7 @@
 # VERDICT
 
+[![CI](https://github.com/zoefunds/verdict/actions/workflows/ci.yml/badge.svg)](https://github.com/zoefunds/verdict/actions/workflows/ci.yml)
+
 **Put money behind your version of reality.**
 
 VERDICT is a collateralized, evidence-based dispute resolution platform built

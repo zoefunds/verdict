@@ -15,7 +15,7 @@ import { cases } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { getCaseCount, getCase, isContractConfigured } from "../lib/genlayer-client.js";
 
-const CONTRACT_STATUS_TO_DB_STATUS: Record<string, (typeof cases.status.enumValues)[number]> = {
+export const CONTRACT_STATUS_TO_DB_STATUS: Record<string, (typeof cases.status.enumValues)[number]> = {
   DRAFT: "draft",
   OPEN: "open",
   AWAITING_RESPONDENT_STAKE: "awaiting_respondent_stake",

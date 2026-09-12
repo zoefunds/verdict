@@ -95,7 +95,6 @@ export async function acquireGenlayerRpcSlot(): Promise<void> {
   const POLL_INTERVAL_MS = 500;
   const startedAt = Date.now();
 
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     let count: number;
     try {

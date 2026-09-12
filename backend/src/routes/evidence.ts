@@ -29,6 +29,19 @@ import { env } from "../lib/env.js";
 import { safeFetchText, truncateForHash, UnsafeUrlError } from "../lib/safe-fetch.js";
 import { getEvidence as getOnChainEvidence, isContractConfigured } from "../lib/genlayer-client.js";
 
+/**
+ * Maps the DB's evidenceType enum to the contract's `kind` string, used
+ * when cross-checking a claimed on-chain evidence id in
+ * PATCH /evidence/:id/link-contract. Module-level (not nested in the
+ * route plugin) so it's directly unit-testable.
+ */
+export function toContractKind(kind: string): string {
+  if (kind === "url") return "URL";
+  if (kind === "transaction_record") return "TX_RECORD";
+  if (kind === "document" || kind === "image") return "DOCUMENT_HASH";
+  return "TEXT_STATEMENT";
+}
+
 const TextEvidenceBody = z.object({
   caseId: z.string().uuid(),
   evidenceType: z.enum(["url", "transaction_record", "text_statement"]),
@@ -162,13 +175,6 @@ export const evidenceRoutes: FastifyPluginAsync = async (app) => {
   });
 
   const LinkEvidenceBody = z.object({ contractEvidenceId: z.string().min(1) });
-
-  function toContractKind(kind: string): string {
-    if (kind === "url") return "URL";
-    if (kind === "transaction_record") return "TX_RECORD";
-    if (kind === "document" || kind === "image") return "DOCUMENT_HASH";
-    return "TEXT_STATEMENT";
-  }
 
   // Records the on-chain evidence id once the frontend's submit_evidence
   // write confirms.

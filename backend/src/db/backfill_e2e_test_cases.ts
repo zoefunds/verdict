@@ -18,7 +18,7 @@
 import "dotenv/config";
 import { db } from "./client.js";
 import { users, cases, caseParticipants, evidence, constitutionVersions } from "./schema.js";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { getCase, getCaseEvidenceIds, getEvidence } from "../lib/genlayer-client.js";
 
 const CASE_IDS = [0, 1, 2, 3];

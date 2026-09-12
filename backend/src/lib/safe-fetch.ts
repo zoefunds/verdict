@@ -81,7 +81,7 @@ const MAX_REDIRECTS = 3;
 
 export class UnsafeUrlError extends Error {}
 
-function isPrivateOrReservedIp(ip: string): boolean {
+export function isPrivateOrReservedIp(ip: string): boolean {
   if (net.isIPv4(ip)) {
     const parts = ip.split(".").map(Number);
     const a = parts[0] ?? 0;
@@ -246,7 +246,7 @@ const HTML_ENTITIES: Record<string, string> = {
  * _fetch_evidence_independently. That's why a hash mismatch is treated by
  * the contract as a signal to weigh, never automatic proof of tampering.
  */
-function extractVisibleText(html: string): string {
+export function extractVisibleText(html: string): string {
   const withoutNoise = html.replace(/<(script|style|noscript)[^>]*>[\s\S]*?<\/\1>/gi, " ");
   const withoutTags = withoutNoise.replace(/<[^>]+>/g, " ");
   const decoded = withoutTags.replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (match, code: string) => {

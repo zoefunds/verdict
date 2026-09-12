@@ -56,7 +56,7 @@ export default async function LandingPage() {
         <div className="mx-auto max-w-7xl px-6 py-24">
           <h2 className="text-headline-lg text-on-surface">Procedural Rigor</h2>
           <p className="mt-3 max-w-2xl text-body-md text-on-surface-variant">
-            Every case follows the same six-step process, enforced by the contract's state machine — no
+            Every case follows the same six-step process, enforced by the contract&apos;s state machine — no
             shortcuts, no discretionary overrides.
           </p>
           <div className="mt-12 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
