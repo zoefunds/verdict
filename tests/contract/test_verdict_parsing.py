@@ -110,21 +110,28 @@ def test_snap_to_settlement_band_two_close_llm_outputs_collapse_together():
 # ---------------------------------------------------------------------------
 
 
+CLAIM_FINDINGS_JSON = '"claim_findings": [{"claim": "did respondent breach the agreement", "determination": "SUPPORTED_CLAIMANT", "evidence_ids": []}]'
+
+
 def test_parse_verdict_claimant_full_share():
-    result = vc._parse_verdict('{"outcome": "CLAIMANT", "confidence_bps": 8000, "reasoning_summary": "clear evidence"}')
+    result = vc._parse_verdict(
+        '{"outcome": "CLAIMANT", "confidence_bps": 8000, "reasoning_summary": "clear evidence", ' + CLAIM_FINDINGS_JSON + "}"
+    )
     assert result["outcome"] == vc.OUTCOME_CLAIMANT
     assert result["verdict_split_bps"] == vc.BPS_DENOMINATOR
     assert result["confidence_bps"] == 8000
 
 
 def test_parse_verdict_respondent_zero_share():
-    result = vc._parse_verdict('{"outcome": "RESPONDENT", "confidence_bps": 7000}')
+    result = vc._parse_verdict('{"outcome": "RESPONDENT", "confidence_bps": 7000, ' + CLAIM_FINDINGS_JSON + "}")
     assert result["outcome"] == vc.OUTCOME_RESPONDENT
     assert result["verdict_split_bps"] == 0
 
 
 def test_parse_verdict_partial_snaps_to_band():
-    result = vc._parse_verdict('{"outcome": "PARTIAL", "claimant_share_bps": 7420, "confidence_bps": 5500}')
+    result = vc._parse_verdict(
+        '{"outcome": "PARTIAL", "claimant_share_bps": 7420, "confidence_bps": 5500, ' + CLAIM_FINDINGS_JSON + "}"
+    )
     assert result["outcome"] == vc.OUTCOME_PARTIAL
     assert result["verdict_split_bps"] == 7500  # snapped, not the raw 7420
 
@@ -144,13 +151,129 @@ def test_parse_verdict_hallucinated_outcome_raises_not_silently_inconclusive():
     """Full-pipeline regression test for audit finding #1: valid JSON with
     a nonsense outcome value must raise, not resolve as INCONCLUSIVE."""
     with pytest.raises(gl.vm.UserError):
-        vc._parse_verdict('{"outcome": "MAYBE_BOTH_IDK", "confidence_bps": 5000}')
+        vc._parse_verdict('{"outcome": "MAYBE_BOTH_IDK", "confidence_bps": 5000, ' + CLAIM_FINDINGS_JSON + "}")
 
 
 def test_parse_verdict_reasoning_is_truncated():
     long_reasoning = "x" * (vc.MAX_REASONING_STORED + 500)
-    result = vc._parse_verdict(f'{{"outcome": "INCONCLUSIVE", "reasoning_summary": "{long_reasoning}"}}')
+    result = vc._parse_verdict(
+        f'{{"outcome": "INCONCLUSIVE", "reasoning_summary": "{long_reasoning}", ' + CLAIM_FINDINGS_JSON + "}"
+    )
     assert len(result["reasoning_summary"]) <= vc.MAX_REASONING_STORED
+
+
+# ---------------------------------------------------------------------------
+# _parse_verdict — structured claim/evidence findings (evidence-linked
+# verdict architecture: claim-by-claim findings, cited evidence ids,
+# an explicit insufficient-evidence route, malformed structure rejected)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_verdict_missing_claim_findings_raises():
+    """A verdict with no claim_findings at all is exactly the 'outcome +
+    freeform prose, no structure' shape this architecture replaces — must
+    be rejected as malformed, not silently accepted."""
+    with pytest.raises(gl.vm.UserError) as exc_info:
+        vc._parse_verdict('{"outcome": "CLAIMANT", "confidence_bps": 8000}')
+    assert exc_info.value.message.startswith(vc.ERR_LLM)
+
+
+def test_parse_verdict_empty_claim_findings_array_raises():
+    with pytest.raises(gl.vm.UserError):
+        vc._parse_verdict('{"outcome": "CLAIMANT", "confidence_bps": 8000, "claim_findings": []}')
+
+
+def test_parse_verdict_claim_findings_invalid_determination_raises():
+    bad = '{"outcome": "CLAIMANT", "confidence_bps": 8000, "claim_findings": [{"claim": "x", "determination": "MAYBE"}]}'
+    with pytest.raises(gl.vm.UserError) as exc_info:
+        vc._parse_verdict(bad)
+    assert exc_info.value.message.startswith(vc.ERR_LLM)
+
+
+def test_parse_verdict_claim_findings_missing_claim_text_raises():
+    bad = '{"outcome": "CLAIMANT", "confidence_bps": 8000, "claim_findings": [{"determination": "SUPPORTED_CLAIMANT"}]}'
+    with pytest.raises(gl.vm.UserError):
+        vc._parse_verdict(bad)
+
+
+def test_parse_verdict_insufficient_evidence_is_a_legitimate_claim_finding():
+    """The explicit 'insufficient evidence' route — a claim can be
+    resolved INSUFFICIENT without that being treated as an error."""
+    payload = (
+        '{"outcome": "INCONCLUSIVE", "confidence_bps": 4000, '
+        '"claim_findings": [{"claim": "was the item defective", "determination": "INSUFFICIENT", "evidence_ids": []}]}'
+    )
+    result = vc._parse_verdict(payload)
+    assert result["claim_findings"][0]["determination"] == vc.CLAIM_FINDING_INSUFFICIENT
+
+
+def test_parse_verdict_evidence_findings_required_when_evidence_exists():
+    """When the case actually has evidence, omitting evidence_findings
+    entirely is malformed — the structure must cover real evidence, not
+    just claims in the abstract."""
+    payload = '{"outcome": "CLAIMANT", "confidence_bps": 8000, ' + CLAIM_FINDINGS_JSON + "}"
+    with pytest.raises(gl.vm.UserError) as exc_info:
+        vc._parse_verdict(payload, evidence_ids=[1, 2])
+    assert exc_info.value.message.startswith(vc.ERR_LLM)
+
+
+def test_parse_verdict_evidence_findings_must_cover_every_evidence_id():
+    """Covering SOME but not all evidence ids is rejected — this is the
+    'not merely JSON shape' requirement: a same-shaped-but-incomplete
+    findings object is treated as malformed, not accepted because it
+    superficially looks right."""
+    payload = (
+        '{"outcome": "CLAIMANT", "confidence_bps": 8000, '
+        + CLAIM_FINDINGS_JSON
+        + ', "evidence_findings": {"1": "SUPPORTS_CLAIMANT"}}'
+    )
+    with pytest.raises(gl.vm.UserError):
+        vc._parse_verdict(payload, evidence_ids=[1, 2])
+
+
+def test_parse_verdict_evidence_findings_rejects_unmappable_determination():
+    payload = (
+        '{"outcome": "CLAIMANT", "confidence_bps": 8000, '
+        + CLAIM_FINDINGS_JSON
+        + ', "evidence_findings": {"1": "MAYBE_KINDA"}}'
+    )
+    with pytest.raises(gl.vm.UserError) as exc_info:
+        vc._parse_verdict(payload, evidence_ids=[1])
+    assert exc_info.value.message.startswith(vc.ERR_LLM)
+
+
+def test_parse_verdict_evidence_findings_accepts_full_valid_coverage():
+    payload = (
+        '{"outcome": "PARTIAL", "claimant_share_bps": 6000, "confidence_bps": 7000, '
+        + CLAIM_FINDINGS_JSON
+        + ', "evidence_findings": {"1": "SUPPORTS_CLAIMANT", "2": "CONTRADICTS_CLAIMANT", "3": "IRRELEVANT"}}'
+    )
+    result = vc._parse_verdict(payload, evidence_ids=[1, 2, 3])
+    assert result["evidence_findings"] == {
+        "1": vc.FINDING_SUPPORTS_CLAIMANT,
+        "2": vc.FINDING_CONTRADICTS_CLAIMANT,
+        "3": vc.FINDING_IRRELEVANT,
+    }
+
+
+def test_parse_verdict_evidence_findings_accepts_array_shape():
+    """LLMs are inconsistent about object-vs-array for id-keyed data —
+    both shapes must parse to the same normalized result."""
+    payload = (
+        '{"outcome": "CLAIMANT", "confidence_bps": 8000, '
+        + CLAIM_FINDINGS_JSON
+        + ', "evidence_findings": [{"evidence_id": 1, "determination": "SUPPORTS_CLAIMANT"}]}'
+    )
+    result = vc._parse_verdict(payload, evidence_ids=[1])
+    assert result["evidence_findings"] == {"1": vc.FINDING_SUPPORTS_CLAIMANT}
+
+
+def test_parse_verdict_no_evidence_ids_skips_evidence_findings_requirement():
+    """A case with no submitted evidence has nothing to classify —
+    evidence_findings should not be required in that situation."""
+    payload = '{"outcome": "INCONCLUSIVE", "confidence_bps": 3000, ' + CLAIM_FINDINGS_JSON + "}"
+    result = vc._parse_verdict(payload, evidence_ids=[])
+    assert result["evidence_findings"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +315,65 @@ def test_verdicts_disagree_on_confidence_beyond_tolerance():
     leader = {"outcome": vc.OUTCOME_CLAIMANT, "verdict_split_bps": 10000, "confidence_bps": 9000}
     validator = {"outcome": vc.OUTCOME_CLAIMANT, "verdict_split_bps": 10000, "confidence_bps": 1000}
     assert _agree(leader, validator) is False
+
+
+# ---------------------------------------------------------------------------
+# _verdicts_agree / _evidence_findings_agree — substantive findings
+# equivalence (validators must recompute and compare more than just the
+# economic outcome — see the module-level FINDING_* docstring)
+# ---------------------------------------------------------------------------
+
+
+def _base(evidence_findings):
+    return {"outcome": vc.OUTCOME_CLAIMANT, "verdict_split_bps": 10000, "confidence_bps": 8000, "evidence_findings": evidence_findings}
+
+
+def test_verdicts_agree_when_evidence_findings_identical():
+    d = _base({"1": vc.FINDING_SUPPORTS_CLAIMANT, "2": vc.FINDING_IRRELEVANT})
+    assert _agree(d, dict(d)) is True
+
+
+def test_verdicts_disagree_same_outcome_but_findings_disagree_on_which_evidence_matters():
+    """The critical new behavior: leader and validator agree on the
+    economic outcome (CLAIMANT, full share) but disagree about WHY — one
+    thinks evidence #1 supports the claimant, the other thinks it
+    contradicts them. Same outcome label must NOT be enough for
+    consensus here."""
+    leader = _base({"1": vc.FINDING_SUPPORTS_CLAIMANT, "2": vc.FINDING_SUPPORTS_CLAIMANT})
+    validator = _base({"1": vc.FINDING_CONTRADICTS_CLAIMANT, "2": vc.FINDING_SUPPORTS_CLAIMANT})
+    assert _agree(leader, validator) is False
+
+
+def test_verdicts_agree_tolerates_exactly_one_mismatch_beyond_two_items():
+    leader = _base({"1": vc.FINDING_SUPPORTS_CLAIMANT, "2": vc.FINDING_SUPPORTS_CLAIMANT, "3": vc.FINDING_IRRELEVANT})
+    validator = _base({"1": vc.FINDING_SUPPORTS_CLAIMANT, "2": vc.FINDING_INSUFFICIENT, "3": vc.FINDING_IRRELEVANT})
+    assert _agree(leader, validator) is True  # exactly one mismatch, 3 items — tolerated
+
+
+def test_verdicts_disagree_beyond_one_mismatch():
+    leader = _base({"1": vc.FINDING_SUPPORTS_CLAIMANT, "2": vc.FINDING_SUPPORTS_CLAIMANT, "3": vc.FINDING_IRRELEVANT})
+    validator = _base({"1": vc.FINDING_CONTRADICTS_CLAIMANT, "2": vc.FINDING_INSUFFICIENT, "3": vc.FINDING_IRRELEVANT})
+    assert _agree(leader, validator) is False  # two mismatches out of 3 — beyond tolerance
+
+
+def test_verdicts_disagree_no_tolerance_at_two_items_or_fewer():
+    leader = _base({"1": vc.FINDING_SUPPORTS_CLAIMANT, "2": vc.FINDING_SUPPORTS_CLAIMANT})
+    validator = _base({"1": vc.FINDING_SUPPORTS_CLAIMANT, "2": vc.FINDING_INSUFFICIENT})
+    assert _agree(leader, validator) is False  # only 2 items — zero tolerance
+
+
+def test_verdicts_disagree_on_which_evidence_ids_exist():
+    leader = _base({"1": vc.FINDING_SUPPORTS_CLAIMANT})
+    validator = _base({"2": vc.FINDING_SUPPORTS_CLAIMANT})
+    assert _agree(leader, validator) is False
+
+
+def test_verdicts_agree_with_no_evidence_findings_at_all():
+    """A case with no submitted evidence — nothing to compare, must not
+    block agreement on the economic outcome."""
+    leader = _base({})
+    validator = _base({})
+    assert _agree(leader, validator) is True
 
 
 if __name__ == "__main__":

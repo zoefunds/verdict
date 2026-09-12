@@ -284,6 +284,52 @@ N consecutive failed cycle(s)` and the affected case's status caught up
 to `settled` in Postgres on the very next successful cycle, no replay of
 intermediate states needed.
 
+## For reviewers
+
+- **Deployed contract**: `0x2BEe5eBb18c8E0D82E68Fc103fA68dfC0e876E58` on
+  GenLayer StudioNet (chain id `61999`, RPC `https://studio.genlayer.com/api`).
+  This is the ONLY contract in this system — there is no second contract,
+  no off-chain adjudication service, and no path by which the backend can
+  independently decide a verdict (see "Why this cannot fairly be
+  centralized" in `docs/GENLAYER.md`).
+- **Verify the deployed source matches this repo**: `genlayer schema
+  0x2BEe5eBb18c8E0D82E68Fc103fA68dfC0e876E58` returns every method's exact
+  parameter list; diff it against `contracts/verdict_contract.py`'s public
+  methods. This exact check is what caught a real stale-deployment
+  mismatch earlier in this project (see `docs/SECURITY.md`) — it isn't a
+  hypothetical procedure.
+- **Test commands**:
+  ```bash
+  python3 -m pytest tests/contract/test_verdict_parsing.py -v   # 37 tests, pure contract logic
+  genvm-lint check contracts/verdict_contract.py --json         # GenVM structural validation
+  cd backend && npm run lint && npm test && npm run build       # 19 tests
+  cd frontend && npm run lint && npm run build
+  ```
+- **CI**: every PR and push to `main` runs all of the above except the
+  live-transaction harness (see badge at the top of this file and
+  `.github/workflows/ci.yml`).
+- **Live lifecycle evidence**: `docs/SECURITY.md` documents two full live
+  testing rounds against real deployed contracts — every non-admin
+  read/write method exercised with real signed StudioNet transactions,
+  real conflicting evidence, real appeals, real GenVM consensus (including
+  genuine `MAJORITY_DISAGREE` splits resolved by retry), and real
+  settlements moving real GEN. `scripts/verification/lifecycle_demo.mjs`
+  is a repeatable, documented harness for reproducing this against the
+  current deployment yourself (needs two funded StudioNet keys — see its
+  README; deliberately kept outside CI, see that file for why).
+- **Why GenLayer is the security boundary, not the backend, in one
+  sentence**: the backend (`backend/src/indexer/`, `backend/src/routes/`)
+  only ever indexes and stores *already-consensus-reached* on-chain state
+  for fast browsing — it has no code path that fetches evidence, calls an
+  LLM, or writes a verdict; every investigation and adjudication decision
+  is computed inside `contracts/verdict_contract.py` by independent
+  GenVM validators reaching consensus on both the economic outcome and
+  the substantive per-evidence findings (see "Structured, evidence-linked
+  verdict architecture" in `docs/SECURITY.md`), and the same contract that
+  ran that consensus is the one holding the escrowed funds — there is no
+  handoff point between "decided" and "paid out" for a centralized
+  component to occupy.
+
 ## Documentation map
 
 - **`docs/ARCHITECTURE.md`** — system split (on-chain vs Postgres vs
@@ -303,6 +349,9 @@ intermediate states needed.
   versions).
 - **`tests/contract/README.md`** — honest scope statement for what the
   unit test suite does and does not cover.
+- **`scripts/verification/README.md`** — the reproducible live-lifecycle
+  verification harness: what it demonstrates, why it's kept out of CI, and
+  how to run it against a real deployment.
 
 ## Contributing / working on this repo
 

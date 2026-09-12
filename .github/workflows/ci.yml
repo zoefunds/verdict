@@ -7,14 +7,19 @@ on:
 
 jobs:
   contract-tests:
-    name: Contract deterministic tests
+    name: Contract lint + deterministic tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install pytest
+      - run: pip install pytest genvm-linter
+      # Real GenVM-specific structural validation (method signatures,
+      # schema extraction, contract-class conventions) — distinct from
+      # the pytest suite below, which only covers pure deterministic
+      # logic. Both are required for a change to be considered verified.
+      - run: genvm-lint check contracts/verdict_contract.py --json
       - run: python3 -m pytest tests/contract/test_verdict_parsing.py -v
 
   backend:

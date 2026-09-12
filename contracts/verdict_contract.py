@@ -42,6 +42,54 @@ VALID_OUTCOMES = frozenset(
     {OUTCOME_CLAIMANT, OUTCOME_RESPONDENT, OUTCOME_PARTIAL, OUTCOME_INCONCLUSIVE}
 )
 
+# ---- Per-evidence findings -----------------------------------------------
+# Structured verdict architecture: the case-level `outcome` above is an
+# AGGREGATE — it does not by itself prove the verdict actually engaged with
+# each piece of evidence rather than pattern-matching on surface features
+# (stake size, submission length, confident phrasing). To make that
+# engagement checkable and independently re-verifiable, every verdict must
+# also classify EVERY piece of evidence in the case against this small,
+# enumerable, deterministic-shape set of determinations — see
+# `_parse_evidence_findings` and `_verdicts_agree`. This is what "claim-by-
+# claim, evidence-linked, not merely outcome + freeform prose" means in
+# code: a bounded per-evidence-id classification that both the leader and
+# every validator independently produce and then substantively compare
+# (not just check for matching JSON keys).
+FINDING_SUPPORTS_CLAIMANT = "SUPPORTS_CLAIMANT"
+FINDING_SUPPORTS_RESPONDENT = "SUPPORTS_RESPONDENT"
+FINDING_CONTRADICTS_CLAIMANT = "CONTRADICTS_CLAIMANT"    # evidence undermines the claimant's account
+FINDING_CONTRADICTS_RESPONDENT = "CONTRADICTS_RESPONDENT"  # evidence undermines the respondent's account
+FINDING_INSUFFICIENT = "INSUFFICIENT"   # evidence exists but doesn't establish anything reliably
+FINDING_IRRELEVANT = "IRRELEVANT"       # evidence doesn't bear on any disputed claim
+VALID_FINDINGS = frozenset(
+    {
+        FINDING_SUPPORTS_CLAIMANT,
+        FINDING_SUPPORTS_RESPONDENT,
+        FINDING_CONTRADICTS_CLAIMANT,
+        FINDING_CONTRADICTS_RESPONDENT,
+        FINDING_INSUFFICIENT,
+        FINDING_IRRELEVANT,
+    }
+)
+
+# Claim-level determinations for the required `claim_findings` narrative
+# array — validated for well-formedness (malformed output forces leader
+# rotation, same as everything else in this section) but NOT used for the
+# leader/validator equivalence check itself, since natural-language claim
+# decomposition legitimately varies between independent LLM calls the same
+# way `reasoning_summary` prose does. The per-evidence `evidence_findings`
+# map above is what carries the substantive, independently-comparable
+# equivalence signal — this exists to make the "insufficient evidence"
+# route explicit and auditable at the claim level, and to require the
+# verdict to actually enumerate the claims it evaluated rather than only
+# stating a final aggregate outcome.
+CLAIM_FINDING_SUPPORTED_CLAIMANT = "SUPPORTED_CLAIMANT"
+CLAIM_FINDING_SUPPORTED_RESPONDENT = "SUPPORTED_RESPONDENT"
+CLAIM_FINDING_INSUFFICIENT = "INSUFFICIENT"
+VALID_CLAIM_FINDINGS = frozenset(
+    {CLAIM_FINDING_SUPPORTED_CLAIMANT, CLAIM_FINDING_SUPPORTED_RESPONDENT, CLAIM_FINDING_INSUFFICIENT}
+)
+
 # ---- Error classification prefixes — deterministic, machine-parseable ------
 # (see Veritine / SelfAmendingConstitution reference contracts: prefixing
 # errors this way lets validator equivalence checks compare failure CLASSES
@@ -60,6 +108,15 @@ MAX_EVIDENCE_URL_LEN = 500
 MAX_EVIDENCE_TEXT_LEN = 6000
 MAX_EVIDENCE_DESCRIPTION_LEN = 2000
 MAX_REASONING_STORED = 2000
+# Bounds for the structured-finding JSON stored per verdict — see
+# FINDING_* / CLAIM_FINDING_* above. evidence_findings_json holds at most
+# one small enum entry per evidence item (MAX_EVIDENCE_PER_CASE below caps
+# how many exist), claim_findings_json holds a bounded narrative array.
+# Both are truncated defensively before storage, same pattern as
+# MAX_REASONING_STORED — never let LLM output size storage cost.
+MAX_EVIDENCE_FINDINGS_JSON_CHARS = 3000
+MAX_CLAIM_FINDINGS_JSON_CHARS = 4000
+MAX_CLAIM_FINDINGS_COUNT = 8  # a case has at most this many distinct claim-level findings recorded
 # Audit finding (external review, 2026-08-25): up to 40 URLs x 5000 chars
 # each could enter a single verdict prompt, with every validator
 # independently rendering mutable live pages — a consensus/liveness
@@ -235,6 +292,14 @@ class Case:
     verdict_split_bps: u32          # claimant's share in bps when outcome == PARTIAL
     confidence_bps: u32
     reasoning_summary: str
+    # Structured, evidence-linked verdict detail (see FINDING_* /
+    # CLAIM_FINDING_* constants and _parse_verdict) — JSON-encoded and
+    # bounded, same storage pattern as reasoning_summary. claim_findings_json
+    # is a list of {claim, determination, evidence_ids}; evidence_findings_json
+    # is an object mapping each evidence id (string) to one of the FINDING_*
+    # determinations. Both are "" until a verdict exists, same as outcome.
+    claim_findings_json: str
+    evidence_findings_json: str
     verdict_rendered_at: u64
     verdict_count: u32              # 1 after first verdict, 2 after an appeal re-verdict
 
@@ -379,6 +444,116 @@ def _coerce_outcome(raw) -> str:
     raise gl.vm.UserError(ERR_LLM + f"verdict 'outcome' field '{raw[:80]}' did not map to any known outcome")
 
 
+def _coerce_finding(raw) -> str:
+    """Same philosophy as _coerce_outcome: an unmappable per-evidence
+    determination is a malformed-output class error (ERR_LLM), never
+    silently defaulted to something plausible-looking. A validator that
+    can't classify a piece of evidence into one of the enumerated buckets
+    below has produced output this contract cannot trust, full stop."""
+    if not isinstance(raw, str):
+        raise gl.vm.UserError(ERR_LLM + "an evidence finding was missing or not a string")
+    cleaned = raw.strip().upper().replace(" ", "_").replace("-", "_")
+    if cleaned in VALID_FINDINGS:
+        return cleaned
+    aliases = {
+        "SUPPORT_CLAIMANT": FINDING_SUPPORTS_CLAIMANT,
+        "SUPPORTS_CLAIMANTS": FINDING_SUPPORTS_CLAIMANT,
+        "SUPPORT_RESPONDENT": FINDING_SUPPORTS_RESPONDENT,
+        "CONTRADICT_CLAIMANT": FINDING_CONTRADICTS_CLAIMANT,
+        "CONTRADICT_RESPONDENT": FINDING_CONTRADICTS_RESPONDENT,
+        "NEUTRAL": FINDING_IRRELEVANT,
+        "NOT_RELEVANT": FINDING_IRRELEVANT,
+        "UNCLEAR": FINDING_INSUFFICIENT,
+        "INSUFFICIENT_EVIDENCE": FINDING_INSUFFICIENT,
+    }
+    if cleaned in aliases:
+        return aliases[cleaned]
+    raise gl.vm.UserError(ERR_LLM + f"evidence finding '{raw[:60]}' did not map to any known determination")
+
+
+def _parse_evidence_findings(payload: dict, evidence_ids: list) -> dict:
+    """Extracts and validates the per-evidence-id determination map — the
+    substantive, independently-comparable core of the structured verdict
+    (see the FINDING_* constants' module docstring). Deliberately does
+    MORE than shape-checking: every real evidence id for the case MUST be
+    covered by name, and every value must be a real, enumerated
+    determination — an LLM that returns a same-shaped-but-incomplete or
+    partially-fabricated findings object is treated identically to
+    malformed JSON (ERR_LLM, forces leader rotation), not accepted because
+    it superficially looks right."""
+    if not evidence_ids:
+        return {}
+    raw_findings = _first_present(payload, ["evidence_findings", "findings_by_evidence"])
+    if raw_findings is None:
+        raise gl.vm.UserError(ERR_LLM + "verdict is missing required 'evidence_findings' field")
+    # Accept either {"3": "SUPPORTS_CLAIMANT", ...} or
+    # [{"evidence_id": 3, "determination": "SUPPORTS_CLAIMANT"}, ...] —
+    # LLMs are inconsistent about object-vs-array for id-keyed data.
+    if isinstance(raw_findings, list):
+        normalized = {}
+        for entry in raw_findings:
+            if not isinstance(entry, dict):
+                raise gl.vm.UserError(ERR_LLM + "evidence_findings array entry was not an object")
+            eid = _first_present(entry, ["evidence_id", "id"])
+            determination = _first_present(entry, ["determination", "finding"])
+            if eid is None:
+                raise gl.vm.UserError(ERR_LLM + "evidence_findings entry missing evidence_id")
+            normalized[str(int(eid))] = determination
+        raw_findings = normalized
+    if not isinstance(raw_findings, dict):
+        raise gl.vm.UserError(ERR_LLM + "evidence_findings was neither an object nor an array")
+
+    result = {}
+    for eid in evidence_ids:
+        key = str(int(eid))
+        if key not in raw_findings:
+            raise gl.vm.UserError(ERR_LLM + f"evidence_findings did not cover evidence id {key} — every submitted item must be classified")
+        result[key] = _coerce_finding(raw_findings[key])
+    return result
+
+
+def _parse_claim_findings(payload: dict) -> list:
+    """Extracts and validates the required claim-by-claim findings array.
+    At least one claim finding is required — a verdict that never states
+    WHAT claim it evaluated, only a final outcome label, is exactly the
+    "outcome + freeform explanation" shape this structure replaces.
+    Well-formedness is enforced (malformed entries raise ERR_LLM, same
+    class as everything else here); the claim TEXT itself is intentionally
+    NOT part of leader/validator equivalence — see the module-level
+    CLAIM_FINDING_* docstring for why."""
+    raw_claims = payload.get("claim_findings")
+    if not isinstance(raw_claims, list) or len(raw_claims) == 0:
+        raise gl.vm.UserError(ERR_LLM + "verdict is missing required non-empty 'claim_findings' array")
+
+    parsed = []
+    for entry in raw_claims[:MAX_CLAIM_FINDINGS_COUNT]:
+        if not isinstance(entry, dict):
+            raise gl.vm.UserError(ERR_LLM + "claim_findings entry was not an object")
+        claim_text = _first_present(entry, ["claim", "claim_text"])
+        if not isinstance(claim_text, str) or not claim_text.strip():
+            raise gl.vm.UserError(ERR_LLM + "claim_findings entry missing non-empty 'claim' text")
+        determination_raw = _first_present(entry, ["determination", "finding"])
+        if not isinstance(determination_raw, str):
+            raise gl.vm.UserError(ERR_LLM + "claim_findings entry missing 'determination'")
+        determination = determination_raw.strip().upper().replace(" ", "_").replace("-", "_")
+        if determination not in VALID_CLAIM_FINDINGS:
+            raise gl.vm.UserError(ERR_LLM + f"claim_findings determination '{determination_raw[:60]}' is not a recognized value")
+        cited_ids_raw = entry.get("evidence_ids", [])
+        cited_ids = []
+        if isinstance(cited_ids_raw, list):
+            for cid in cited_ids_raw:
+                try:
+                    cited_ids.append(int(cid))
+                except (TypeError, ValueError):
+                    continue
+        parsed.append({
+            "claim": _truncate(claim_text.strip(), 300),
+            "determination": determination,
+            "evidence_ids": cited_ids,
+        })
+    return parsed
+
+
 # Discrete settlement bands for PARTIAL verdicts (audit finding: a 1500 bps
 # / 15%-of-pot tolerance on raw split values is too wide for monetary
 # settlement — two validators could materially disagree on payout amount
@@ -402,16 +577,34 @@ def _coerce_bps(raw, default: int = 5000) -> int:
     return max(0, min(BPS_DENOMINATOR, value))
 
 
-def _parse_verdict(raw, has_respondent_evidence_or_not: bool = True) -> dict:
-    """Extract a small, structured decision object from the LLM's raw
-    output. Per the equivalence-principle requirement: we deliberately
-    normalize to a FEW structured fields (outcome enum, split bps,
-    confidence bps, short reasoning) rather than trusting free-form prose,
-    because comparative equivalence over these few numeric/enum fields is
-    what lets validators reach consensus without disagreeing over
-    incidental phrasing."""
+def _parse_verdict(raw, evidence_ids: list = None) -> dict:
+    """Extract a structured, evidence-linked decision object from the
+    LLM's raw output — NOT just an outcome label plus freeform prose.
+    Three layers, each validated independently (a malformed entry at any
+    layer raises ERR_LLM and forces leader rotation, same as a malformed
+    outcome always has):
+      1. Economic layer (outcome enum, split bps, confidence bps) — the
+         few numeric/enum fields whose equivalence across leader/validator
+         determines consensus on the actual payout.
+      2. Claim layer (`claim_findings`, required, non-empty) — what
+         specific claims were evaluated and whether each was supported,
+         contradicted, or found insufficient. Validated for
+         well-formedness but not used for equivalence (see
+         CLAIM_FINDING_* docstring) — free-text claim decomposition
+         legitimately varies between independent LLM calls.
+      3. Evidence layer (`evidence_findings`, required to cover every real
+         evidence id) — a bounded, enumerable, deterministic-shape map
+         that DOES fully participate in equivalence (_verdicts_agree),
+         because it's tied to a fixed set of on-chain evidence ids rather
+         than free text. This is the mechanism that makes "validators
+         independently recompute and compare substantive findings, not
+         merely JSON shape" true in code rather than just in a docstring.
+    `evidence_ids` should be the case's actual on-chain evidence id list;
+    pass None/empty for a case with no evidence (nothing to classify)."""
     payload = _parse_json_object(raw)
     outcome = _coerce_outcome(_first_present(payload, ["outcome", "verdict", "winner"]))
+    claim_findings = _parse_claim_findings(payload)
+    evidence_findings = _parse_evidence_findings(payload, evidence_ids or [])
 
     split_raw = _first_present(payload, ["claimant_share_bps", "verdict_split_bps", "split_bps"])
     if outcome == OUTCOME_CLAIMANT:
@@ -444,7 +637,31 @@ def _parse_verdict(raw, has_respondent_evidence_or_not: bool = True) -> dict:
         "verdict_split_bps": split_bps,
         "confidence_bps": confidence_bps,
         "reasoning_summary": _truncate(reasoning, MAX_REASONING_STORED),
+        "claim_findings": claim_findings,
+        "evidence_findings": evidence_findings,
     }
+
+
+def _evidence_findings_agree(leader_findings: dict, validator_findings: dict) -> bool:
+    """Requires the two independently-produced per-evidence-id
+    determination maps to agree on every id for small evidence counts, and
+    on all but one id otherwise — a deliberate, documented tolerance (not
+    full exact-match on every item for every case size) so that one
+    genuinely borderline classification (e.g. an item that could
+    reasonably read as either INSUFFICIENT or a weak SUPPORTS_*) doesn't
+    force perpetual leader rotation the way zero tolerance would, while
+    still requiring REAL, near-total substantive agreement rather than
+    none at all. Module-level (not a method) so it's directly unit-
+    testable without a contract instance, same as every other pure
+    verdict-parsing helper in this section."""
+    keys = set(leader_findings.keys()) | set(validator_findings.keys())
+    if not keys:
+        return True  # no evidence in this case — nothing to compare
+    if set(leader_findings.keys()) != set(validator_findings.keys()):
+        return False  # disagreement on WHICH evidence exists is never tolerated
+    mismatches = sum(1 for k in keys if leader_findings[k] != validator_findings[k])
+    max_mismatches = 0 if len(keys) <= 2 else 1
+    return mismatches <= max_mismatches
 
 
 # ============================================================================
@@ -762,6 +979,8 @@ class Verdict(gl.Contract):
             verdict_split_bps=u32(0),
             confidence_bps=u32(0),
             reasoning_summary="",
+            claim_findings_json="",
+            evidence_findings_json="",
             verdict_rendered_at=u64(0),
             verdict_count=u32(0),
             appeal_used=False,
@@ -1117,32 +1336,84 @@ Weigh the evidence from BOTH sides against the constitution above. A larger
 stake, a longer submission, or confident phrasing must NEVER by itself be
 treated as evidence of correctness — only the evidentiary substance matters.
 
-Decide the outcome. Choose exactly one:
-- CLAIMANT: the evidence clearly and materially supports the claimant's account.
-- RESPONDENT: the evidence clearly and materially supports the respondent's account.
-- PARTIAL: both accounts are partially supported — assign a claimant_share_bps
-  (0-10000, where 10000 = fully claimant, 0 = fully respondent) reflecting the
-  proportional split of fault/entitlement.
-- INCONCLUSIVE: the evidence is genuinely insufficient or too evenly balanced
-  to responsibly favor either side.
+HANDLING CONFLICTING OR UNRELIABLE EVIDENCE:
+- If two pieces of evidence directly contradict each other, do NOT average
+  or split the difference by default. Prefer the item with stronger
+  independent verification (a FETCH FAILED item, or one whose content-hash
+  check DOES NOT MATCH, is weaker than one that was successfully fetched
+  and hash-matched) and say so explicitly in that evidence item's
+  determination and in your reasoning.
+- A FETCH FAILED witness record is not proof of anything either way —
+  classify it INSUFFICIENT rather than silently ignoring it or treating
+  the failure itself as suspicious.
+- If NEITHER side submitted evidence bearing on a specific claim, that
+  claim's determination must be INSUFFICIENT — never resolve a claim in
+  either party's favor purely because they asserted it more confidently
+  or at greater length.
+
+REQUIRED STRUCTURE — this verdict must be evidence-linked, not just a
+label with a paragraph of prose:
+1. Identify each distinct factual claim actually in dispute between the
+   parties (at least one, at most {MAX_CLAIM_FINDINGS_COUNT}).
+2. For EACH evidence item listed above (ids: {[item['id'] for item in evidence_items]}),
+   classify it against the dispute using EXACTLY one of: "SUPPORTS_CLAIMANT",
+   "SUPPORTS_RESPONDENT", "CONTRADICTS_CLAIMANT", "CONTRADICTS_RESPONDENT",
+   "INSUFFICIENT" (exists but doesn't reliably establish anything),
+   "IRRELEVANT" (doesn't bear on any disputed claim). Every single evidence
+   id listed must appear — omitting one is treated as a malformed response.
+3. Decide the overall outcome. Choose exactly one:
+   - CLAIMANT: the evidence clearly and materially supports the claimant's account.
+   - RESPONDENT: the evidence clearly and materially supports the respondent's account.
+   - PARTIAL: both accounts are partially supported — assign a claimant_share_bps
+     (0-10000, where 10000 = fully claimant, 0 = fully respondent) reflecting the
+     proportional split of fault/entitlement.
+   - INCONCLUSIVE: the evidence is genuinely insufficient or too evenly balanced
+     to responsibly favor either side — this is a legitimate, expected outcome
+     when the record doesn't support a confident determination, not a failure.
 
 Respond with ONLY a JSON object, no markdown, with exactly these keys:
 {{
   "outcome": one of "CLAIMANT", "RESPONDENT", "PARTIAL", "INCONCLUSIVE",
   "claimant_share_bps": integer 0-10000, meaningful only when outcome is "PARTIAL" (use 10000 for CLAIMANT, 0 for RESPONDENT, 5000 as a neutral placeholder for INCONCLUSIVE),
   "confidence_bps": integer 0-10000 reflecting your confidence in this outcome,
-  "reasoning_summary": one paragraph (under 150 words) grounded only in the constitution and the evidence above
+  "reasoning_summary": one paragraph (under 150 words) grounded only in the constitution and the evidence above,
+  "claim_findings": [
+    {{"claim": "short statement of one disputed claim", "determination": one of "SUPPORTED_CLAIMANT", "SUPPORTED_RESPONDENT", "INSUFFICIENT", "evidence_ids": [list of witness record ids that bear on this claim]}}
+    // at least one entry, at most {MAX_CLAIM_FINDINGS_COUNT}
+  ],
+  "evidence_findings": {{
+    // one entry per witness record id above — string keys, e.g. "{evidence_items[0]['id'] if evidence_items else 0}": "SUPPORTS_CLAIMANT"
+  }}
 }}"""
 
     def _verdicts_agree(self, leader_data: dict, validator_data: dict) -> bool:
-        """Pure comparison of the ECONOMIC substance of two verdicts — the
-        equivalence-principle core. The decisive fields are the outcome
-        enum and (for PARTIAL) the split bps; confidence is compared with
-        a wide tolerance since it's advisory only. This is deliberately
-        NOT exact-string equality on `reasoning_summary` — free text always
-        varies between independent LLM calls, and requiring verbatim
-        agreement there is exactly the mistake that pushes a contract into
-        permanent UNDETERMINED status."""
+        """Equivalence-principle core — and deliberately NOT limited to the
+        economic/outcome layer. Two checks, both required:
+
+        1. ECONOMIC substance: the outcome enum and (for PARTIAL) the split
+           bps; confidence compared with a wide tolerance since it's
+           advisory only. This alone was the full check before the
+           structured-verdict work — kept unchanged so existing
+           consensus behavior for the payout itself is preserved exactly.
+        2. SUBSTANTIVE FINDINGS: the per-evidence-id `evidence_findings`
+           map (see FINDING_* / _parse_evidence_findings) must
+           independently agree between leader and validator on MOST real
+           evidence items, not merely have "a findings object" of the
+           right shape. This is what closes the gap between "the model
+           returned valid JSON" and "the model actually reached the same
+           substantive conclusion about the evidence" — two independent
+           LLM calls that agree on CLAIMANT/RESPONDENT/PARTIAL split but
+           disagree about which specific evidence supports that outcome
+           are NOT treated as a real consensus here.
+
+        This is deliberately NOT exact-string equality on
+        `reasoning_summary` or `claim_findings`' claim text — free text
+        always varies between independent LLM calls, and requiring
+        verbatim agreement there is exactly the mistake that pushes a
+        contract into permanent UNDETERMINED status. The per-evidence
+        findings map is the one piece of "substance beyond the label" that
+        IS bounded and enumerable enough to compare directly, which is why
+        it (and only it) participates in equivalence at that granularity."""
         leader_outcome = leader_data["outcome"]
         validator_outcome = validator_data["outcome"]
         if leader_outcome != validator_outcome:
@@ -1153,6 +1424,9 @@ Respond with ONLY a JSON object, no markdown, with exactly these keys:
                 return False
 
         if abs(int(leader_data["confidence_bps"]) - int(validator_data["confidence_bps"])) > CONFIDENCE_BPS_TOLERANCE:
+            return False
+
+        if not _evidence_findings_agree(leader_data.get("evidence_findings", {}), validator_data.get("evidence_findings", {})):
             return False
 
         return True
@@ -1216,7 +1490,7 @@ Respond with ONLY a JSON object, no markdown, with exactly these keys:
                 })
             prompt = self._build_verdict_prompt(case, core_articles, case_rules, items)
             raw = gl.nondet.exec_prompt(prompt, response_format="json")
-            parsed = _parse_verdict(raw)
+            parsed = _parse_verdict(raw, evidence_ids=[int(e) for e in evidence_ids])
             # Audit finding (external review, 2026-08-25): carry the
             # LEADER's own actually-observed per-source fetch/hash results
             # through to storage instead of a blanket post-verdict marker.
@@ -1235,7 +1509,19 @@ Respond with ONLY a JSON object, no markdown, with exactly these keys:
             return self._verdicts_agree(leaders_res.calldata, validator_data)
 
         result = gl.vm.run_nondet_unsafe(leader, validator)
-        return _parse_verdict(result) if isinstance(result, str) else result
+        return _parse_verdict(result, evidence_ids=[int(e) for e in evidence_ids]) if isinstance(result, str) else result
+
+    def _store_verdict_findings(self, case: Case, verdict: dict) -> None:
+        """Persists the structured claim- and evidence-level findings
+        (see FINDING_* / CLAIM_FINDING_* and _parse_verdict) onto the case
+        record, deterministic bookkeeping run after consensus on `verdict`
+        has already been reached — same pattern as the existing
+        outcome/split/confidence/reasoning assignments right above every
+        call site. JSON-encoded and defensively truncated so malformed or
+        oversized LLM output (already validated for correctness by
+        _parse_verdict) can never inflate storage cost unboundedly."""
+        case.claim_findings_json = _truncate(json.dumps(verdict.get("claim_findings", [])), MAX_CLAIM_FINDINGS_JSON_CHARS)
+        case.evidence_findings_json = _truncate(json.dumps(verdict.get("evidence_findings", {})), MAX_EVIDENCE_FINDINGS_JSON_CHARS)
 
     def _mark_evidence_independently_fetched(self, case_id: int, fetch_results: dict) -> None:
         """Deterministic bookkeeping pass after a verdict: records the
@@ -1310,6 +1596,7 @@ Respond with ONLY a JSON object, no markdown, with exactly these keys:
         case.verdict_split_bps = u32(int(verdict["verdict_split_bps"]))
         case.confidence_bps = u32(int(verdict["confidence_bps"]))
         case.reasoning_summary = verdict["reasoning_summary"]
+        self._store_verdict_findings(case, verdict)
         case.verdict_rendered_at = u64(now_ts)
         case.verdict_count = u32(int(case.verdict_count) + 1)
         case.status = STATUS_APPEAL_WINDOW
@@ -1501,6 +1788,7 @@ Respond with ONLY a JSON object, no markdown, with exactly these keys:
         case.verdict_split_bps = u32(int(verdict["verdict_split_bps"]))
         case.confidence_bps = u32(int(verdict["confidence_bps"]))
         case.reasoning_summary = verdict["reasoning_summary"]
+        self._store_verdict_findings(case, verdict)
         case.verdict_rendered_at = u64(now_ts)
         case.verdict_count = u32(int(case.verdict_count) + 1)
         case.status = STATUS_FINAL
@@ -1693,6 +1981,8 @@ Respond with ONLY a JSON object, no markdown, with exactly these keys:
             "verdict_split_bps": int(case.verdict_split_bps),
             "confidence_bps": int(case.confidence_bps),
             "reasoning_summary": case.reasoning_summary,
+            "claim_findings": case.claim_findings_json,
+            "evidence_findings": case.evidence_findings_json,
             "verdict_rendered_at": int(case.verdict_rendered_at),
             "verdict_count": int(case.verdict_count),
             "appeal_used": bool(case.appeal_used),

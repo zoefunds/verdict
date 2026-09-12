@@ -275,6 +275,72 @@ Score at re-audit: 3,300/4,000. Five findings, all addressed:
      remains an open gap**: a real local GenVM validator-consensus test
      run is one funded LLM provider key away, not blocked by tooling.
 
+## Structured, evidence-linked verdict architecture (2026-09-12)
+
+Strengthens the judgment core so a verdict is a claim-by-claim,
+evidence-cited decision rather than an outcome label plus freeform prose,
+and so validator consensus requires agreement on substantive findings, not
+just the economic outcome. All changes live inside
+`contracts/verdict_contract.py` — no investigation or adjudication logic
+was moved to or added in the backend.
+
+**What changed** (see `contracts/README.md` section 5.7 for the full
+per-layer breakdown):
+- `_parse_verdict` now requires two additional structured fields from the
+  LLM, both independently validated (malformed entries raise `ERR_LLM`,
+  the same class as a malformed outcome always has, forcing leader
+  rotation rather than silent acceptance):
+  - `claim_findings` — a required, non-empty array of the specific
+    disputed claims evaluated, each with a `SUPPORTED_CLAIMANT`/
+    `SUPPORTED_RESPONDENT`/`INSUFFICIENT` determination and cited evidence
+    ids. This makes "insufficient evidence" an explicit, first-class route
+    at the claim level, not only inferable from the case-level
+    `INCONCLUSIVE` outcome.
+  - `evidence_findings` — required to cover EVERY real on-chain evidence
+    id for the case (an incomplete map is rejected, not accepted because
+    it superficially looks right), classifying each item as
+    `SUPPORTS_CLAIMANT`/`SUPPORTS_RESPONDENT`/`CONTRADICTS_CLAIMANT`/
+    `CONTRADICTS_RESPONDENT`/`INSUFFICIENT`/`IRRELEVANT`.
+- `_verdicts_agree` now requires agreement on BOTH the existing economic
+  layer (outcome/split/confidence, unchanged) AND the `evidence_findings`
+  map (`_evidence_findings_agree`) — exact agreement for ≤2 evidence
+  items, at most one mismatch tolerated otherwise. Two independent LLM
+  calls landing on the same outcome but disagreeing about which evidence
+  actually supports it are no longer treated as consensus.
+- The verdict prompt (`_build_verdict_prompt`) gained explicit adversarial-
+  evidence handling instructions: prefer independently-verified/
+  hash-matched sources when two items conflict; classify a failed fetch as
+  `INSUFFICIENT` rather than treating the failure itself as suspicious;
+  never resolve a claim in either party's favor purely on confidence or
+  length of assertion.
+- Both structured artifacts are persisted on-chain (`Case.claim_findings_json`,
+  `Case.evidence_findings_json`, bounded and truncated the same way
+  `reasoning_summary` always has been) and exposed via `get_case`, so a
+  reviewer or either party can inspect exactly which evidence was found to
+  support or contradict which claim — not just the final number.
+
+**What this builds on, unchanged**: the existing adversarial-evidence
+protections predate this change and remain exactly as they were —
+prompt-injection defense (every untrusted block explicitly wrapped and
+labeled, see `_build_verdict_prompt`'s `CRITICAL SECURITY RULE`), bounded/
+canonicalized fetched content (`EVIDENCE_CONTENT_BYTES`, see the second
+external audit round above), independent per-validator re-fetch
+(`_fetch_evidence_independently`), and source-reachability/freshness
+signals (`fetch_succeeded`, `fetch_note`, `content_hash_matched`, all
+already stored per evidence item and already surfaced in the prompt).
+
+**Verification**: 18 new unit tests added to
+`tests/contract/test_verdict_parsing.py` (37 total, all passing) covering:
+missing/empty/malformed `claim_findings`, incomplete `evidence_findings`
+coverage, unmappable determinations, both object- and array-shaped
+`evidence_findings` input (LLMs are inconsistent about which), the
+zero-evidence case (no findings required), and — the core new equivalence
+behavior — same-economic-outcome-but-disagreeing-findings correctly
+failing consensus, plus the one/two-item tolerance boundary. Also passes
+`genvm-lint check contracts/verdict_contract.py` (structural/schema
+validation distinct from the pytest suite — see `.github/workflows/ci.yml`,
+which now runs both on every PR).
+
 ## Live end-to-end lifecycle audit (2026-08-25)
 
 Requested explicitly: run real, detailed tests against the deployed v3
@@ -555,6 +621,17 @@ consider that a standing note, not a surprise to rediscover each time.
 
 ## Known gaps / follow-up before real-value production use
 
+- [ ] **The structured, evidence-linked verdict architecture (above) has
+      NOT yet been verified against a real GenVM/LLM call.** It's
+      confirmed correct by 18 passing unit tests and a clean `genvm-lint`
+      pass, both of which validate parsing/equivalence logic and contract
+      structure — neither exercises a real model actually producing
+      `claim_findings`/`evidence_findings` in the requested shape under
+      real conditions. That needs a fresh contract deployment (done by the
+      project owner, never automated — see "Redeploying the contract" in
+      the README) followed by a real lifecycle run, e.g. via
+      `scripts/verification/lifecycle_demo.mjs`. Stated plainly rather
+      than implied as done.
 - [ ] Real local GenVM validator-consensus test run via `genlayer up`
       localnet mode — tooling and Docker are confirmed working, blocked
       only on an LLM provider API key (OpenAI/Heurist/Gemini/XAI) for the

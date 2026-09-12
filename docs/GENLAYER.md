@@ -19,6 +19,67 @@ establish delivery occurred" be answered with the same integrity guarantees
 as a deterministic computation, instead of trusting one party's assertion
 or a single oracle.
 
+## Why this cannot fairly be centralized
+
+A centralized adjudicator — a backend service with an owner-controlled API
+key calling an LLM, or a human reviewer — could technically produce an
+answer to "did the delivered work meet the agreed scope" just as GenVM
+can. What it cannot do is produce that answer in a way either party has
+any structural reason to trust, once real, disputed collateral is on the
+line. The concrete failure mode is simple and doesn't require assuming bad
+faith, only ordinary incentive: **the operator of a centralized adjudicator
+controls both the evidence the model sees and the payout decision it
+produces**, with nothing that requires them to show their work, weight
+both sides symmetrically, or resist pressure from whichever party has
+more influence over the platform. A disgruntled operator, a compromised
+API key, a silent prompt change, or simple selective inattention to one
+side's evidence are all invisible to the parties and unfalsifiable after
+the fact — there is no artifact a losing party can point to and say "the
+process itself, not just the outcome, was compromised."
+
+GenLayer's design directly closes each part of that gap, at a real,
+accepted cost:
+
+- **Independent re-investigation, not one party's word.** Every validator
+  re-fetches evidence and re-runs the judgment themselves
+  (`_fetch_evidence_independently`, called from inside every leader AND
+  every validator closure) — no single party, including the protocol
+  operator, ever gets to be the one whose fetch/reasoning is simply
+  trusted.
+- **Consensus over the substantive findings, not just the final number.**
+  As of this contract's structured-verdict architecture (see
+  `contracts/README.md` section 5.7), agreement is required on WHICH
+  evidence supports the outcome (`evidence_findings`), not only on the
+  outcome label itself — a single centralized process producing a
+  plausible-sounding answer has no equivalent check forcing it to show
+  independently-reproduced substantive reasoning.
+- **The verdict is binding on real escrowed collateral inside the same
+  trust boundary that ran the investigation.** A centralized adjudicator
+  is architecturally separate from the escrow — someone still has to
+  trust that its answer gets faithfully relayed into whatever custodies
+  the funds, which is exactly the seam an operator (or a compromised
+  relay) could exploit. Here, the contract that holds the funds is the
+  same contract that ran the consensus investigation; there is no relay
+  step where "the investigation said X" could silently become "the
+  payout does Y" instead.
+- **The cost is real and is being paid deliberately.** Every verdict costs
+  multiple independent LLM calls plus independent web fetches instead of
+  one, and takes real wall-clock time for consensus and (on appeal) a real
+  re-investigation window (see `docs/SECURITY.md` "Real timing constraints
+  discovered" — a genuine ~1 hour minimum, confirmed live, not
+  theoretical). That's the price of the process itself being verifiable
+  and non-repudiable rather than merely fast — a deliberate trade this
+  project accepts rather than routes around by moving judgment to a
+  faster centralized path.
+
+This is why `docs/SECURITY.md` and this file are explicit that
+investigation and adjudication logic live **only** inside
+`contracts/verdict_contract.py` — the backend (`backend/src/indexer/`,
+`backend/src/routes/`) only ever reads already-consensus-reached state to
+index it for fast browsing, and never independently evaluates evidence or
+computes a verdict of its own. If the backend ever gained that capability,
+the entire argument above would stop applying to VERDICT.
+
 ## Avoiding UNDETERMINED / leader-rotation
 
 This was an explicit, hard requirement. The contract addresses it by:
@@ -26,9 +87,11 @@ This was an explicit, hard requirement. The contract addresses it by:
 1. Using `gl.vm.run_nondet_unsafe(leader, validator)` with a **custom
    tolerance-band comparator** (`_verdicts_agree`) instead of exact
    equality — the LLM returns a small structured object (outcome enum +
-   basis-point split + confidence + short reasoning), and consensus
-   compares only the structured fields within tolerance bands, never raw
-   prose.
+   basis-point split + confidence + short reasoning) plus a bounded,
+   enumerable per-evidence findings map, and consensus compares the
+   structured/enumerable fields within tolerance, never raw prose (see
+   `contracts/README.md` section 5.7 for the full structured-verdict
+   layer breakdown).
 2. Classifying every error into `[EXPECTED]` / `[EXTERNAL]` / `[TRANSIENT]`
    / `[LLM_ERROR]` prefixes so validators can agree on a failure *class*
    even when exact error text differs slightly between runs.

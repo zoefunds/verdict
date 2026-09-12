@@ -903,3 +903,55 @@ Three concrete gaps found by an external audit, all fixed and verified:
   works with placeholder `NEXT_PUBLIC_*` env vars (the values CI will use,
   since it never contacts a real backend/contract) before trusting the
   workflow file, not just assumed from writing it.
+
+## Structured, evidence-linked verdict architecture (2026-09-12)
+
+Real contract-code change this time, not docs/tests-only — the core
+judgment logic in `contracts/verdict_contract.py`. Summary in
+`docs/SECURITY.md` "Structured, evidence-linked verdict architecture";
+what's worth remembering here:
+
+- Kept the economic layer (outcome/split/confidence) byte-for-byte
+  unchanged in behavior — added a claim layer (`claim_findings`, required
+  non-empty, validated but excluded from equivalence — free text) and an
+  evidence layer (`evidence_findings`, required to cover every real
+  evidence id, included in equivalence). The design choice that matters:
+  ONLY the evidence layer participates in leader/validator consensus
+  beyond the economic outcome, specifically because it's the one piece
+  that's both substantive AND bounded/enumerable (tied to real on-chain
+  evidence ids) — free-text claim decomposition would have reintroduced
+  the exact "exact-string equality on prose forces UNDETERMINED" mistake
+  this project already fixed once for `reasoning_summary`.
+- `_evidence_findings_agree` tolerates exactly one mismatch above 2
+  evidence items, zero below — a deliberate, documented middle ground
+  between "any shape passes" and "one disagreement ever tolerated forces
+  perpetual leader rotation." Chose this specifically because we've
+  directly observed real `MAJORITY_DISAGREE` consensus splits happen in
+  this project even under the simpler pre-existing schema — adding a
+  stricter, zero-tolerance layer on top without evidence it's achievable
+  would have been a real regression risk, not just an assumption.
+- `genvm-lint` (a real, installable `pip install genvm-linter` package —
+  distinct from `genlayer-test`) caught a real, non-obvious GenVM-specific
+  rule immediately: a new helper method declared `@staticmethod` failed
+  lint with "must have 'self' as first parameter" — GenVM's contract-class
+  convention doesn't allow staticmethods the way plain Python does. Fixed
+  by making it a normal (if self-unused) instance method. This is
+  exactly the kind of GenVM-specific structural rule that pytest against
+  a stub `genlayer` module can never catch — worth remembering to run
+  `genvm-lint` after any contract structural change, not just after
+  logic changes.
+- Existing test helper `_verdicts_agree(None, leader, validator)` calls
+  (self=None, since the method didn't touch self before) kept working by
+  making the new `_evidence_findings_agree` a MODULE-LEVEL function
+  instead of another method — same pattern as every other pure
+  verdict-parsing helper in this file, and it means the unbound-call test
+  pattern didn't need to change at all.
+- Honestly flagged in SECURITY.md's known gaps: this is verified by 37
+  passing unit tests + a clean `genvm-lint` pass, NEITHER of which
+  exercises a real LLM actually producing this new required shape under
+  real conditions. That needs a fresh deployment (user's job, never
+  automated) and a real lifecycle run — formalized what that run looks
+  like as `scripts/verification/lifecycle_demo.mjs`, a real committed
+  script built on the exact genlayer-js pattern already proven live
+  earlier this project (private-key `createAccount`/`createClient`,
+  since `genlayer write` can't send payable value), not a fresh guess.

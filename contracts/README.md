@@ -143,20 +143,65 @@ data** and is never treated as instructions to the verdict LLM (see the
 explicit untrusted-data wrapping in `_build_verdict_prompt`, and the
 prompt-injection defense described in the docstrings).
 
-### 5.7 Non-deterministic verdict evaluation
+### 5.7 Non-deterministic verdict evaluation — structured, evidence-linked
 The contract's entire nondeterministic surface area is two `@gl.public.write`
 entrypoints: `render_verdict` and `resolve_appeal`, both routing through
 `_run_verdict_judgment`. For every `URL`-kind evidence item, the leader *and*
 every validator independently re-fetch the live page at verdict time via
 `gl.nondet.web.render` — never trusting a cached snapshot from submission
-time, so post-submission tampering is detectable. The LLM is asked to return
-a small **structured** decision object — `outcome` enum (`CLAIMANT` /
-`RESPONDENT` / `PARTIAL` / `INCONCLUSIVE`), `claimant_share_bps`,
-`confidence_bps`, and a short `reasoning_summary` — and validator consensus
-(`_verdicts_agree`) compares only the structured, economically-meaningful
-fields with an explicit tolerance band, never exact-string equality on
-prose. See the main report to the user for why this avoids `UNDETERMINED`
-consensus / leader rotation.
+time, so post-submission tampering is detectable.
+
+The verdict itself is **not** an outcome label plus freeform prose — it's a
+three-layer structured decision (`_parse_verdict`, `FINDING_*` /
+`CLAIM_FINDING_*` constants):
+
+1. **Economic layer** — `outcome` enum (`CLAIMANT`/`RESPONDENT`/`PARTIAL`/
+   `INCONCLUSIVE`), `claimant_share_bps`, `confidence_bps`. Unchanged from
+   the original design.
+2. **Claim layer** (`claim_findings`, required, non-empty) — the LLM must
+   enumerate the specific disputed claims it evaluated and, for each, state
+   whether it was `SUPPORTED_CLAIMANT`, `SUPPORTED_RESPONDENT`, or
+   `INSUFFICIENT` — an explicit, first-class "insufficient evidence" route
+   at the claim level, not just at the case-outcome level. Validated for
+   well-formedness (malformed entries raise `ERR_LLM`, forcing leader
+   rotation, same as a malformed outcome always has) but the claim TEXT
+   itself is intentionally excluded from equivalence checking — free-text
+   claim decomposition legitimately varies between independent LLM calls,
+   the same way `reasoning_summary` prose always has.
+3. **Evidence layer** (`evidence_findings`, required to cover every real
+   on-chain evidence id for the case) — a bounded, enumerable map
+   classifying EVERY submitted evidence item as `SUPPORTS_CLAIMANT`,
+   `SUPPORTS_RESPONDENT`, `CONTRADICTS_CLAIMANT`, `CONTRADICTS_RESPONDENT`,
+   `INSUFFICIENT`, or `IRRELEVANT`. This is the layer that actually
+   participates in leader/validator equivalence beyond the economic
+   outcome (see below) — because it's tied to a fixed, deterministic set
+   of on-chain evidence ids rather than free text, it's directly and
+   substantively comparable between two independent LLM calls.
+
+**Validator equivalence is no longer outcome-only.** `_verdicts_agree`
+requires both: (a) the same economic outcome/split/confidence within the
+existing tolerance bands, exactly as before, AND (b) the two independently-
+computed `evidence_findings` maps to agree on every item for small evidence
+counts (≤2 items) or on all but one item otherwise
+(`_evidence_findings_agree`). Two independent LLM calls that land on the
+same CLAIMANT/RESPONDENT/PARTIAL outcome but disagree about *which
+evidence actually supports it* are **not** treated as real consensus —
+this is what makes "validators independently recompute and compare the
+substantive findings, not merely JSON shape or labels" true in code, not
+just in a docstring. The tolerance (rather than zero-mismatch exact
+match) is a deliberate, documented trade-off: it keeps consensus
+practically achievable for one genuinely borderline classification
+without permitting wholesale disagreement about the evidence to pass as
+agreement.
+
+The prompt (`_build_verdict_prompt`) also gives explicit adversarial-
+evidence handling instructions: prefer independently-verified/hash-matched
+sources over unverified ones when two items conflict; classify a failed
+fetch as `INSUFFICIENT`, never as suspicious in itself; and never resolve
+a claim in either party's favor purely because one side asserted it more
+confidently or at greater length. See the main report to the user for why
+the equivalence-tolerance design (here and in `SPLIT_BPS_TOLERANCE`/
+`SETTLEMENT_BANDS_BPS`) avoids `UNDETERMINED` consensus / leader rotation.
 
 ### 5.8 Settlement
 `settle_case` executes payout once a case reaches `FINAL`. Outcome →
@@ -191,6 +236,35 @@ any residual accrued treasury balance.
 `get_case_rules`, `get_constitution` (by version), `get_current_constitution_version`,
 `get_case_events` (append-only per-case activity log), `get_protocol_config`,
 `get_metrics`.
+
+---
+
+## Internal subsystems and invariants
+
+`Verdict` is one deployed contract by design — a single shared source of
+truth for escrow, evidence, and adjudication is the whole point (see the
+main report to the user for why splitting adjudication out to a
+centralized service would defeat that). Internally, though, it's organized
+into clearly separated subsystems, each owning a distinct part of state
+and a distinct set of invariants — this is the "advanced code done well"
+structure inside one contract, not a monolith with no internal boundaries.
+
+| Subsystem | Owns | Core invariant |
+|---|---|---|
+| **Governance / constitution** (5.4) | `constitution_versions`, `current_constitution_version` | A published version's `articles_json` is immutable once written; amendments create a NEW version, never edit a prior one. Every case freezes `constitution_version` at creation — amendments are never retroactive to an in-flight case. |
+| **Case lifecycle** (5.5) | `Case.status` and the fields gated by it | `status` only ever moves forward through the fixed state machine (`DRAFT → ... → SETTLED`, or one of the early-exit terminal states `CANCELLED`/`ABANDONED_REFUNDED`) — no write path can move it backward or skip a required predecessor state (enforced by `_require(case.status == ...)` guards at the top of every state-changing method). |
+| **Evidence / provenance** (5.6) | `Evidence`, `case_evidence_ids` | Once stored, an `Evidence` record's `content_hash` and `submitted_by` never change — only the verdict-time-populated fields (`independently_fetched`, `fetch_succeeded`, `content_hash_matched`) are ever written, and only once, by `_mark_evidence_independently_fetched`, and only from the leader's own actually-observed result (never a blanket marker — see that method's docstring). |
+| **Non-deterministic investigation** (5.7) | Nothing in storage directly — reads `Case`/`Evidence`, produces a verdict dict | Every URL fetch and every LLM call happens independently inside `leader()`/`validator()` closures called by `gl.vm.run_nondet_unsafe` — the deterministic caller (`render_verdict`/`resolve_appeal`) never sees raw model output directly, only the already-consensus-reached structured dict. |
+| **Equivalence checking** (5.7) | Nothing in storage — pure comparison logic (`_verdicts_agree`, `_evidence_findings_agree`, module-level and unit-testable without a contract instance) | A verdict is only ever accepted into state after BOTH the economic layer and the evidence-findings layer independently agree between leader and validator (see 5.7 above) — there is no code path that writes a `Case`'s outcome fields from a single, unverified LLM response. |
+| **Appeal** (5.9) | `Case.appeal_*` fields | `appeal_used` can only transition `False → True`, exactly once per case, enforced before `file_appeal` does anything else — a case cannot be appealed twice regardless of outcome. The appeal bond ledger follows the same zero-then-transfer discipline as every other payout (see "Escrow primitives" above). |
+| **Settlement** (5.8) | `Case.settled`, the stake/bond ledger fields | `settle_case` reads a ledger field, zeros it, persists, THEN transfers (see "Escrow primitives" above) — a second call against an already-settled case reads a zeroed field and rejects before any transfer is attempted, so the same deposit cannot structurally be paid out twice. |
+
+Cross-subsystem coupling is intentionally narrow: the investigation
+subsystem reads governance (constitution text) and evidence (content +
+provenance) but never writes either; settlement reads the verdict produced
+by investigation but never re-runs or second-guesses it; only
+consensus-reached, already-validated data ever crosses from the
+nondeterministic layer into deterministic state.
 
 ---
 
