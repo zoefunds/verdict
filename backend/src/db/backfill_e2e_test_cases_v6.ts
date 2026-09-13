@@ -46,6 +46,13 @@ async function getCaseEvidenceIds(id: number): Promise<number[]> {
     args: [id],
   }) as Promise<number[]>;
 }
+async function getCaseEvents(id: number, limit: number): Promise<Array<{ kind: string; ts: number }>> {
+  return readClient.readContract({
+    address: CONTRACT_ADDRESS,
+    functionName: "get_case_events",
+    args: [id, limit],
+  }) as Promise<Array<{ kind: string; ts: number }>>;
+}
 async function getEvidence(id: number): Promise<Record<string, unknown>> {
   return readClient.readContract({ address: CONTRACT_ADDRESS, functionName: "get_evidence", args: [id] }) as Promise<
     Record<string, unknown>
@@ -153,11 +160,30 @@ async function main() {
       caseDbId = createdCase.id;
       console.log(`Backfilled case ${contractCaseId} -> DB case ${caseDbId} (${createdCase.caseNumber}, status=${dbStatus})`);
 
+      // AUDIT FIX: the frontend's EscrowBar derives "Locked"/"Pending"
+      // from case_participants.stakeLockedAt, not from live chain state
+      // — leaving it null (as every prior round's backfill script did)
+      // makes a fully settled case's escrow display "Pending" and "0 GEN
+      // in escrow" forever, even though the stakes were genuinely locked
+      // and paid out on-chain. Derive the real lock timestamps from the
+      // contract's own event log (CASE_CREATED = claimant's stake locked
+      // at creation; RESPONDENT_FUNDED = respondent's stake locked) —
+      // real on-chain timestamps, not assumed/estimated ones. A case
+      // still awaiting respondent funding won't have a RESPONDENT_FUNDED
+      // event yet, which is correctly reflected as still "Pending".
+      const events = await getCaseEvents(contractCaseId, 200);
+      const caseCreatedEvent = events.find((e) => e.kind === "CASE_CREATED");
+      const respondentFundedEvent = events.find((e) => e.kind === "RESPONDENT_FUNDED");
+      const claimantLockedAt = caseCreatedEvent ? new Date(caseCreatedEvent.ts * 1000) : null;
+      const respondentLockedAt = respondentFundedEvent ? new Date(respondentFundedEvent.ts * 1000) : null;
+
       await db.insert(caseParticipants).values([
-        { caseId: caseDbId, userId: caseClaimantUserId, role: "claimant" },
-        { caseId: caseDbId, userId: caseRespondentUserId, role: "respondent" },
+        { caseId: caseDbId, userId: caseClaimantUserId, role: "claimant", stakeLockedAt: claimantLockedAt },
+        { caseId: caseDbId, userId: caseRespondentUserId, role: "respondent", stakeLockedAt: respondentLockedAt },
       ]);
-      console.log(`  -> participants inserted (claimant=${caseClaimantUserId}, respondent=${caseRespondentUserId})`);
+      console.log(
+        `  -> participants inserted (claimant=${caseClaimantUserId} lockedAt=${claimantLockedAt}, respondent=${caseRespondentUserId} lockedAt=${respondentLockedAt})`,
+      );
     }
 
     const evidenceIds = await getCaseEvidenceIds(contractCaseId);
