@@ -512,7 +512,7 @@ def _parse_evidence_findings(payload: dict, evidence_ids: list) -> dict:
     return result
 
 
-def _parse_claim_findings(payload: dict) -> list:
+def _parse_claim_findings(payload: dict, evidence_ids: list) -> list:
     """Extracts and validates the required claim-by-claim findings array.
     At least one claim finding is required — a verdict that never states
     WHAT claim it evaluated, only a final outcome label, is exactly the
@@ -520,11 +520,22 @@ def _parse_claim_findings(payload: dict) -> list:
     Well-formedness is enforced (malformed entries raise ERR_LLM, same
     class as everything else here); the claim TEXT itself is intentionally
     NOT part of leader/validator equivalence — see the module-level
-    CLAIM_FINDING_* docstring for why."""
+    CLAIM_FINDING_* docstring for why.
+
+    AUDIT FIX (re-audit, 2026-09-13): a cited `evidence_ids` entry was
+    previously accepted as any integer, including ones that don't
+    correspond to any real evidence item on this case — a model could
+    cite a fabricated or out-of-case id and this layer would silently
+    accept it, undermining the entire "evidence-linked" premise. Every
+    cited id is now checked against the case's actual on-chain
+    `evidence_ids` set; an unrecognized id raises ERR_LLM exactly like any
+    other malformed-output class here, rather than being silently dropped
+    or accepted."""
     raw_claims = payload.get("claim_findings")
     if not isinstance(raw_claims, list) or len(raw_claims) == 0:
         raise gl.vm.UserError(ERR_LLM + "verdict is missing required non-empty 'claim_findings' array")
 
+    valid_evidence_ids = {int(e) for e in evidence_ids}
     parsed = []
     for entry in raw_claims[:MAX_CLAIM_FINDINGS_COUNT]:
         if not isinstance(entry, dict):
@@ -543,9 +554,14 @@ def _parse_claim_findings(payload: dict) -> list:
         if isinstance(cited_ids_raw, list):
             for cid in cited_ids_raw:
                 try:
-                    cited_ids.append(int(cid))
+                    cited_id = int(cid)
                 except (TypeError, ValueError):
-                    continue
+                    raise gl.vm.UserError(ERR_LLM + f"claim_findings cited a non-integer evidence id '{cid}'")
+                if cited_id not in valid_evidence_ids:
+                    raise gl.vm.UserError(
+                        ERR_LLM + f"claim_findings cited evidence id {cited_id}, which does not exist on this case"
+                    )
+                cited_ids.append(cited_id)
         parsed.append({
             "claim": _truncate(claim_text.strip(), 300),
             "determination": determination,
@@ -603,7 +619,7 @@ def _parse_verdict(raw, evidence_ids: list = None) -> dict:
     pass None/empty for a case with no evidence (nothing to classify)."""
     payload = _parse_json_object(raw)
     outcome = _coerce_outcome(_first_present(payload, ["outcome", "verdict", "winner"]))
-    claim_findings = _parse_claim_findings(payload)
+    claim_findings = _parse_claim_findings(payload, evidence_ids or [])
     evidence_findings = _parse_evidence_findings(payload, evidence_ids or [])
 
     split_raw = _first_present(payload, ["claimant_share_bps", "verdict_split_bps", "split_bps"])
@@ -642,26 +658,49 @@ def _parse_verdict(raw, evidence_ids: list = None) -> dict:
     }
 
 
+# A finding is DECISIVE when it actually bears on which side wins —
+# a determination that some piece of evidence SUPPORTS or CONTRADICTS one
+# party is a substantive claim about the outcome. INSUFFICIENT and
+# IRRELEVANT are both non-decisive: both mean "this item doesn't move the
+# needle either way," just for different reasons (unreliable vs
+# off-topic), so treating a leader/validator split between exactly those
+# two labels as a real disagreement would be pedantic, not substantive.
+DECISIVE_FINDINGS = frozenset(
+    {FINDING_SUPPORTS_CLAIMANT, FINDING_SUPPORTS_RESPONDENT, FINDING_CONTRADICTS_CLAIMANT, FINDING_CONTRADICTS_RESPONDENT}
+)
+
+
 def _evidence_findings_agree(leader_findings: dict, validator_findings: dict) -> bool:
     """Requires the two independently-produced per-evidence-id
-    determination maps to agree on every id for small evidence counts, and
-    on all but one id otherwise — a deliberate, documented tolerance (not
-    full exact-match on every item for every case size) so that one
-    genuinely borderline classification (e.g. an item that could
-    reasonably read as either INSUFFICIENT or a weak SUPPORTS_*) doesn't
-    force perpetual leader rotation the way zero tolerance would, while
-    still requiring REAL, near-total substantive agreement rather than
-    none at all. Module-level (not a method) so it's directly unit-
-    testable without a contract instance, same as every other pure
+    determination maps to agree EXACTLY on every DECISIVE finding — any
+    evidence item either side classifies as actually supporting or
+    contradicting a party must match exactly, full stop, no tolerance.
+    AUDIT FIX (re-audit, 2026-09-13): the prior version tolerated one
+    mismatch anywhere in the map for cases with more than two evidence
+    items, which could let leader and validator agree on the economic
+    outcome while genuinely disagreeing about which evidence was decisive
+    for it — not a robust validation bar. The only mismatches now
+    tolerated are between two NON-decisive labels (INSUFFICIENT vs
+    IRRELEVANT), which is a deterministic materiality rule, not a
+    numeric-count tolerance: it doesn't loosen with more evidence items,
+    because either finding says "this item doesn't decide anything," just
+    for a different reason. Module-level (not a method) so it's directly
+    unit-testable without a contract instance, same as every other pure
     verdict-parsing helper in this section."""
     keys = set(leader_findings.keys()) | set(validator_findings.keys())
     if not keys:
         return True  # no evidence in this case — nothing to compare
     if set(leader_findings.keys()) != set(validator_findings.keys()):
         return False  # disagreement on WHICH evidence exists is never tolerated
-    mismatches = sum(1 for k in keys if leader_findings[k] != validator_findings[k])
-    max_mismatches = 0 if len(keys) <= 2 else 1
-    return mismatches <= max_mismatches
+    for k in keys:
+        leader_val = leader_findings[k]
+        validator_val = validator_findings[k]
+        if leader_val == validator_val:
+            continue
+        if leader_val in DECISIVE_FINDINGS or validator_val in DECISIVE_FINDINGS:
+            return False  # any decisive mismatch is a real disagreement — zero tolerance
+        # both non-decisive (INSUFFICIENT vs IRRELEVANT) — tolerated
+    return True
 
 
 # ============================================================================

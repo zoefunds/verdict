@@ -198,23 +198,34 @@ three-layer structured decision (`_parse_verdict`, `FINDING_*` /
    participates in leader/validator equivalence beyond the economic
    outcome (see below) — because it's tied to a fixed, deterministic set
    of on-chain evidence ids rather than free text, it's directly and
-   substantively comparable between two independent LLM calls.
+   substantively comparable between two independent LLM calls. Every
+   cited `evidence_ids` entry in `claim_findings` is also checked against
+   the case's real evidence id set — a citation to a fabricated or
+   out-of-case id is rejected as malformed output (`ERR_LLM`), not
+   silently accepted.
 
 **Validator equivalence is no longer outcome-only.** `_verdicts_agree`
 requires both: (a) the same economic outcome/split/confidence within the
-existing tolerance bands, exactly as before, AND (b) the two independently-
-computed `evidence_findings` maps to agree on every item for small evidence
-counts (≤2 items) or on all but one item otherwise
-(`_evidence_findings_agree`). Two independent LLM calls that land on the
-same CLAIMANT/RESPONDENT/PARTIAL outcome but disagree about *which
-evidence actually supports it* are **not** treated as real consensus —
-this is what makes "validators independently recompute and compare the
-substantive findings, not merely JSON shape or labels" true in code, not
-just in a docstring. The tolerance (rather than zero-mismatch exact
-match) is a deliberate, documented trade-off: it keeps consensus
-practically achievable for one genuinely borderline classification
-without permitting wholesale disagreement about the evidence to pass as
-agreement.
+existing tolerance bands, exactly as before, AND (b) the two
+independently-computed `evidence_findings` maps to agree EXACTLY on every
+**decisive** finding — `SUPPORTS_CLAIMANT`/`SUPPORTS_RESPONDENT`/
+`CONTRADICTS_CLAIMANT`/`CONTRADICTS_RESPONDENT` — with zero tolerance,
+regardless of how many evidence items exist (`_evidence_findings_agree`).
+Two independent LLM calls that land on the same CLAIMANT/RESPONDENT/
+PARTIAL outcome but disagree about *which evidence actually supports it*
+are **not** treated as real consensus — this is what makes "validators
+independently recompute and compare the substantive findings, not merely
+JSON shape or labels" true in code, not just in a docstring. The only
+mismatch ever tolerated is between two **non-decisive** labels
+(`INSUFFICIENT` vs `IRRELEVANT`) — both mean "this item doesn't decide
+anything," just for different reasons (unreliable vs off-topic), so
+requiring leader and validator to agree on which of those two applies
+would be pedantic, not substantive. This is a deterministic materiality
+rule, not a numeric-count backstop — it does not loosen as a case's
+evidence count grows, which closes a real gap an external re-audit found
+in an earlier count-based tolerance (zero mismatches ≤2 items, one
+mismatch otherwise) that could let a genuinely decisive disagreement pass
+once a case had 3+ evidence items.
 
 The prompt (`_build_verdict_prompt`) also gives explicit adversarial-
 evidence handling instructions: prefer independently-verified/hash-matched

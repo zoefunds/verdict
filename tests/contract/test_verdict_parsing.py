@@ -277,6 +277,55 @@ def test_parse_verdict_no_evidence_ids_skips_evidence_findings_requirement():
 
 
 # ---------------------------------------------------------------------------
+# _parse_claim_findings — cited evidence_ids must be real for the case
+# (re-audit finding, 2026-09-13: a claim could previously cite a
+# fabricated or out-of-case evidence id with no validation at all)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_verdict_claim_findings_rejects_fabricated_evidence_id():
+    payload = (
+        '{"outcome": "CLAIMANT", "confidence_bps": 8000, '
+        '"claim_findings": [{"claim": "x", "determination": "SUPPORTED_CLAIMANT", "evidence_ids": [99]}]}'
+    )
+    with pytest.raises(gl.vm.UserError) as exc_info:
+        vc._parse_verdict(payload, evidence_ids=[1, 2, 3])
+    assert exc_info.value.message.startswith(vc.ERR_LLM)
+    assert "99" in exc_info.value.message
+
+
+def test_parse_verdict_claim_findings_accepts_real_evidence_ids():
+    payload = (
+        '{"outcome": "CLAIMANT", "confidence_bps": 8000, '
+        '"claim_findings": [{"claim": "x", "determination": "SUPPORTED_CLAIMANT", "evidence_ids": [1, 3]}], '
+        '"evidence_findings": {"1": "SUPPORTS_CLAIMANT", "2": "IRRELEVANT", "3": "SUPPORTS_CLAIMANT"}}'
+    )
+    result = vc._parse_verdict(payload, evidence_ids=[1, 2, 3])
+    assert result["claim_findings"][0]["evidence_ids"] == [1, 3]
+
+
+def test_parse_verdict_claim_findings_rejects_evidence_id_when_case_has_none():
+    """A case with zero submitted evidence has no valid ids to cite at
+    all — citing any id is fabrication."""
+    payload = (
+        '{"outcome": "INCONCLUSIVE", "confidence_bps": 3000, '
+        '"claim_findings": [{"claim": "x", "determination": "INSUFFICIENT", "evidence_ids": [0]}]}'
+    )
+    with pytest.raises(gl.vm.UserError):
+        vc._parse_verdict(payload, evidence_ids=[])
+
+
+def test_parse_verdict_claim_findings_rejects_non_integer_evidence_id():
+    payload = (
+        '{"outcome": "CLAIMANT", "confidence_bps": 8000, '
+        '"claim_findings": [{"claim": "x", "determination": "SUPPORTED_CLAIMANT", "evidence_ids": ["not-an-id"]}]}'
+    )
+    with pytest.raises(gl.vm.UserError) as exc_info:
+        vc._parse_verdict(payload, evidence_ids=[1, 2])
+    assert exc_info.value.message.startswith(vc.ERR_LLM)
+
+
+# ---------------------------------------------------------------------------
 # _verdicts_agree — leader/validator equivalence
 # ---------------------------------------------------------------------------
 
@@ -344,22 +393,41 @@ def test_verdicts_disagree_same_outcome_but_findings_disagree_on_which_evidence_
     assert _agree(leader, validator) is False
 
 
-def test_verdicts_agree_tolerates_exactly_one_mismatch_beyond_two_items():
-    leader = _base({"1": vc.FINDING_SUPPORTS_CLAIMANT, "2": vc.FINDING_SUPPORTS_CLAIMANT, "3": vc.FINDING_IRRELEVANT})
+def test_verdicts_agree_tolerates_mismatch_between_two_non_decisive_labels():
+    """AUDIT FIX (re-audit, 2026-09-13): the ONLY tolerated mismatch is
+    between two non-decisive labels (INSUFFICIENT vs IRRELEVANT) — both
+    mean "this item doesn't decide anything," just for different reasons.
+    This is a deterministic rule about WHAT the labels mean, not a count-
+    based tolerance, so it applies the same way regardless of how many
+    evidence items exist."""
+    leader = _base({"1": vc.FINDING_SUPPORTS_CLAIMANT, "2": vc.FINDING_IRRELEVANT, "3": vc.FINDING_IRRELEVANT})
     validator = _base({"1": vc.FINDING_SUPPORTS_CLAIMANT, "2": vc.FINDING_INSUFFICIENT, "3": vc.FINDING_IRRELEVANT})
-    assert _agree(leader, validator) is True  # exactly one mismatch, 3 items — tolerated
+    assert _agree(leader, validator) is True
 
 
-def test_verdicts_disagree_beyond_one_mismatch():
+def test_verdicts_disagree_on_any_decisive_mismatch_no_matter_how_few():
+    """A single mismatch on a DECISIVE finding is never tolerated, even
+    when every other item agrees — this is the "robust validation" bar:
+    no numeric-count tolerance ever lets a decisive disagreement pass."""
+    leader = _base(
+        {"1": vc.FINDING_SUPPORTS_CLAIMANT, "2": vc.FINDING_SUPPORTS_CLAIMANT, "3": vc.FINDING_IRRELEVANT, "4": vc.FINDING_IRRELEVANT}
+    )
+    validator = _base(
+        {"1": vc.FINDING_SUPPORTS_CLAIMANT, "2": vc.FINDING_INSUFFICIENT, "3": vc.FINDING_IRRELEVANT, "4": vc.FINDING_IRRELEVANT}
+    )
+    assert _agree(leader, validator) is False  # item 2: SUPPORTS_CLAIMANT vs INSUFFICIENT — decisive mismatch
+
+
+def test_verdicts_disagree_on_multiple_decisive_mismatches():
     leader = _base({"1": vc.FINDING_SUPPORTS_CLAIMANT, "2": vc.FINDING_SUPPORTS_CLAIMANT, "3": vc.FINDING_IRRELEVANT})
     validator = _base({"1": vc.FINDING_CONTRADICTS_CLAIMANT, "2": vc.FINDING_INSUFFICIENT, "3": vc.FINDING_IRRELEVANT})
-    assert _agree(leader, validator) is False  # two mismatches out of 3 — beyond tolerance
+    assert _agree(leader, validator) is False
 
 
 def test_verdicts_disagree_no_tolerance_at_two_items_or_fewer():
     leader = _base({"1": vc.FINDING_SUPPORTS_CLAIMANT, "2": vc.FINDING_SUPPORTS_CLAIMANT})
     validator = _base({"1": vc.FINDING_SUPPORTS_CLAIMANT, "2": vc.FINDING_INSUFFICIENT})
-    assert _agree(leader, validator) is False  # only 2 items — zero tolerance
+    assert _agree(leader, validator) is False  # item 2 is a decisive-vs-non-decisive mismatch
 
 
 def test_verdicts_disagree_on_which_evidence_ids_exist():

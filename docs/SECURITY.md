@@ -1,9 +1,16 @@
 # VERDICT — Security Review
 
-Status: **pre-deployment draft**. Must be revisited once the contract is
-actually deployed to StudioNet and once real load/traffic patterns exist.
-This is not a substitute for a professional audit before handling real
-economic value beyond StudioNet testnet GEN.
+Status: **live on StudioNet, actively tested** — currently deployed as
+v5 (`0xc4650C47245FDF354b1502FE9533BD944087cB88`; see "v5 contract:
+2-test round" below), through three full contract redeployments and
+three rounds of real end-to-end lifecycle testing so far (see "Live
+end-to-end lifecycle audit", "Multi-product live lifecycle audit", and
+"v5 contract: 2-test round"). This document is a running record, updated
+after each audit round and each live testing round — not a one-time
+pre-deployment snapshot. It is still not a substitute for a professional
+external audit before handling real economic value beyond StudioNet
+testnet GEN; see "Known gaps" at the end for what that would need to
+cover.
 
 ## Authentication & session management
 
@@ -303,10 +310,29 @@ per-layer breakdown):
     `CONTRADICTS_RESPONDENT`/`INSUFFICIENT`/`IRRELEVANT`.
 - `_verdicts_agree` now requires agreement on BOTH the existing economic
   layer (outcome/split/confidence, unchanged) AND the `evidence_findings`
-  map (`_evidence_findings_agree`) — exact agreement for ≤2 evidence
-  items, at most one mismatch tolerated otherwise. Two independent LLM
-  calls landing on the same outcome but disagreeing about which evidence
-  actually supports it are no longer treated as consensus.
+  map (`_evidence_findings_agree`). Two independent LLM calls landing on
+  the same outcome but disagreeing about which evidence actually supports
+  it are no longer treated as consensus. **AUDIT FIX (re-audit,
+  2026-09-13)**: the equivalence rule is exact agreement on every
+  DECISIVE finding (`SUPPORTS_CLAIMANT`/`SUPPORTS_RESPONDENT`/
+  `CONTRADICTS_CLAIMANT`/`CONTRADICTS_RESPONDENT`) — zero tolerance,
+  regardless of evidence count. The only mismatch ever tolerated is
+  between two NON-decisive labels (`INSUFFICIENT` vs `IRRELEVANT`), both
+  of which mean "this item doesn't decide anything," just for different
+  reasons. This replaced an earlier count-based tolerance (zero mismatches
+  for ≤2 items, one mismatch otherwise) that could let a genuinely
+  decisive disagreement pass as consensus once a case had 3+ evidence
+  items — a real robustness gap an external re-audit caught. The new rule
+  is a deterministic materiality rule, not a numeric backstop: it doesn't
+  loosen as evidence count grows.
+- `_parse_claim_findings` now validates every cited `evidence_ids` entry
+  against the case's real, on-chain evidence id set — citing a fabricated
+  or out-of-case id raises `ERR_LLM`, the same malformed-output class as
+  everything else in this layer. **AUDIT FIX (re-audit, 2026-09-13)**:
+  previously any integer was accepted as a citation with no existence
+  check, which undermined the "evidence-linked" claim — a model could
+  cite evidence that was never actually submitted and nothing would catch
+  it.
 - The verdict prompt (`_build_verdict_prompt`) gained explicit adversarial-
   evidence handling instructions: prefer independently-verified/
   hash-matched sources when two items conflict; classify a failed fetch as
@@ -329,17 +355,20 @@ external audit round above), independent per-validator re-fetch
 signals (`fetch_succeeded`, `fetch_note`, `content_hash_matched`, all
 already stored per evidence item and already surfaced in the prompt).
 
-**Verification**: 18 new unit tests added to
-`tests/contract/test_verdict_parsing.py` (37 total, all passing) covering:
+**Verification**: 23 unit tests cover this architecture in
+`tests/contract/test_verdict_parsing.py` (42 total, all passing) —
 missing/empty/malformed `claim_findings`, incomplete `evidence_findings`
 coverage, unmappable determinations, both object- and array-shaped
 `evidence_findings` input (LLMs are inconsistent about which), the
-zero-evidence case (no findings required), and — the core new equivalence
-behavior — same-economic-outcome-but-disagreeing-findings correctly
-failing consensus, plus the one/two-item tolerance boundary. Also passes
-`genvm-lint check contracts/verdict_contract.py` (structural/schema
-validation distinct from the pytest suite — see `.github/workflows/ci.yml`,
-which now runs both on every PR).
+zero-evidence case (no findings required), fabricated/out-of-case cited
+evidence ids correctly rejected, and the core equivalence behavior —
+same-economic-outcome-but-disagreeing-findings correctly failing
+consensus, the decisive-vs-non-decisive tolerance boundary tested in both
+directions, and a decisive mismatch never passing regardless of how many
+other items agree. Also passes `genvm-lint check
+contracts/verdict_contract.py` (structural/schema validation distinct
+from the pytest suite — see `.github/workflows/ci.yml`, which runs both
+on every PR).
 
 ## Live end-to-end lifecycle audit (2026-08-25)
 
