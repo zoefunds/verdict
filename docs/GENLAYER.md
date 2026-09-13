@@ -210,22 +210,10 @@ set, since a prior round's Vercel env var silently held an empty string
 despite `vercel env add` reporting success. The same verification method
 was repeated for v4.
 
-**v4 deployed and wired in (current):**
-`0x2BEe5eBb18c8E0D82E68Fc103fA68dfC0e876E58` is the current production
-contract, wired into the Fly.io backend (`VERDICT_CONTRACT_ADDRESS`
-secret), the indexer, and the Vercel frontend
-(`NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS`). Verified against real StudioNet
-state via the `genlayer` CLI before any test transaction: `genlayer schema
-0x2BEe5e...` confirmed the contract loads and every method's parameter
-list matches checked-in source exactly, `genlayer call 0x2BEe5e...
-get_protocol_config` returned live config, and `get_case_count` returned
-`0` (fresh deployment). All prior-contract case/evidence/participant data
-was cleared from Postgres before testing began
-(`backend/src/db/clear_all_cases.ts`), per the request that prompted this
-round.
-
-Every non-admin read and write method was then exercised against v4
-across 4 independent, fully-detailed product-dispute test cases (real
+**Superseded deployment (retired):** `0x2BEe5eBb18c8E0D82E68Fc103fA68dfC0e876E58`
+("v4") was deployed, wired in, and CLI-verified the same way v3 was.
+Every non-admin read and write method was exercised against it across 4
+independent, fully-detailed product-dispute test cases (real
 claim/evidence text, not placeholders) — full write-up in
 `docs/SECURITY.md` "Multi-product live lifecycle audit". Two
 `render_verdict`/`resolve_appeal` calls genuinely hit `MAJORITY_DISAGREE`
@@ -235,7 +223,41 @@ The 4 resulting cases (3 settled, 1 cancelled) were, once again, created
 by calling the contract directly rather than through the app's normal
 `POST /cases` flow — so they needed the same kind of Postgres backfill as
 the v3 evidence-visibility gap before appearing on the frontend; see
-`backend/src/db/backfill_e2e_test_cases.ts`.
+`backend/src/db/backfill_e2e_test_cases.ts`. Retired in favor of v5 to
+pick up the structured-verdict architecture added the same day as v5's
+deployment (see below) — v4's source predates it.
+
+**v5 deployed and wired in (current):**
+`0xc4650C47245FDF354b1502FE9533BD944087cB88` is the current production
+contract, wired into the Fly.io backend (`VERDICT_CONTRACT_ADDRESS`
+secret), the indexer, and the Vercel frontend
+(`NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS`). Verified against real StudioNet
+state via the `genlayer` CLI before any test transaction: `genlayer schema
+0xc4650C...` confirmed the contract loads and every method's parameter
+list matches checked-in source exactly, `genlayer call 0xc4650C...
+get_protocol_config` returned live config, and `get_case_count` returned
+`0` (fresh deployment). All prior-contract data was cleared from Postgres
+before testing began, per the request that prompted this round.
+
+Every non-admin read and write method was then exercised across 2
+independent, fully-detailed product-dispute test cases — full write-up
+in `docs/SECURITY.md` "v5 contract: 2-test round". This was the **first
+live confirmation the structured-verdict architecture (`claim_findings`/
+`evidence_findings`, added the same day) actually works** against a real
+model: a real `render_verdict` call produced the required structure
+correctly on its first attempt. A real `resolve_appeal` under a 4-item
+evidence set hit 7 genuine `MAJORITY_DISAGREE` rounds before reaching
+agreement — informative about the new equivalence tolerance under real
+conditions, not a bug (no invalid state was ever written by a
+disagreeing round). Two real bugs were also found and fixed in this
+round's own test tooling (not the contract): the `genlayer` CLI had
+silently auto-updated mid-session to a broken release candidate breaking
+all reads (fixed by downgrading to `0.39.2`), and the test harness's
+success check accepted a `FINALIZED` status without checking the actual
+`result_name`, treating a genuine disagreement as false-success and
+causing 3 duplicate cases before being caught. Both cases from this
+round needed the same Postgres backfill as prior rounds
+(`backend/src/db/backfill_e2e_test_cases_v5.ts`).
 
 ### SDK version note
 

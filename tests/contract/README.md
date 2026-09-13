@@ -3,20 +3,37 @@
 ## What's covered
 
 `test_verdict_parsing.py` unit-tests the deterministic, pure-Python logic
-in `contracts/verdict_contract.py` — specifically the functions touched by
-the 2026-08-25 external audit fixes:
+in `contracts/verdict_contract.py` — 37 tests total, covering:
 
 - `_coerce_outcome` — regression tests proving malformed/hallucinated LLM
   output now raises (`ERR_LLM`) instead of silently resolving as
-  `INCONCLUSIVE`.
+  `INCONCLUSIVE` (2026-08-25 external audit fix).
 - `_snap_to_settlement_band` / `_parse_verdict` — the discrete
-  settlement-band snapping that replaced the old wide raw-bps tolerance.
-- `_verdicts_agree` — the leader/validator equivalence check, confirming
-  same-band agreement and different-band disagreement.
+  settlement-band snapping that replaced the old wide raw-bps tolerance
+  (2026-08-25 external audit fix).
+- `_verdicts_agree` — the leader/validator equivalence check on the
+  economic layer (outcome/split/confidence), confirming same-band
+  agreement and different-band disagreement.
+- **Structured, evidence-linked verdict layer** (2026-09-12, see
+  `contracts/README.md` section 5.7): `claim_findings` and
+  `evidence_findings` parsing/validation — missing/empty/malformed claim
+  findings raise `ERR_LLM`; incomplete `evidence_findings` coverage
+  (omitting a real evidence id) is rejected, not accepted because it
+  superficially looks right; both object- and array-shaped
+  `evidence_findings` input parse identically (LLMs are inconsistent
+  about which); the zero-evidence case requires no findings map at all.
+- `_evidence_findings_agree` — the new equivalence layer requiring
+  leader/validator agreement on per-evidence-id determinations, not just
+  the economic outcome: identical maps agree, disagreeing-on-which-
+  evidence-matters correctly fails even with the same economic outcome,
+  and the documented one-mismatch-above-two-items tolerance boundary is
+  tested in both directions.
 
 These run via `tests/contract/genlayer_stub.py`, a minimal stand-in for
 the `genlayer` package (just enough for the module to import and these
-pure functions to execute) — not a GenVM emulator.
+pure functions to execute) — not a GenVM emulator. `genvm-lint` (see
+below) covers real GenVM-specific structural validation that this stub
+cannot.
 
 Run with:
 
@@ -44,17 +61,38 @@ comparison) → `file_appeal` → `open_appeal_evidence_window` →
 (real fund movement, confirmed via before/after account balances).
 
 Full write-up, including the exact consensus data observed for each call:
-`docs/SECURITY.md` → "Live end-to-end lifecycle audit". This is NOT part
-of this pytest suite — it was a one-off manual script-driven run against
-real infrastructure, not something CI can currently repeat on demand (see
-"What's still not automated" below).
+`docs/SECURITY.md` → "Live end-to-end lifecycle audit", "Multi-product
+live lifecycle audit", and "v5 contract: 2-test round" — three full live
+testing rounds across three contract deployments so far, each covering
+every non-admin method with real, detailed dispute scenarios. This is
+NOT part of this pytest suite — it's one-off manual script-driven runs
+against real infrastructure, not something CI can currently repeat on
+demand (see "What's still not automated" below). The most recent round
+was also the first live confirmation that the structured, evidence-linked
+verdict architecture (`claim_findings`/`evidence_findings` — see
+`contracts/README.md` section 5.7) actually works against a real model,
+not just the unit tests below.
+
+## What IS automated: `genvm-lint`
+
+Unlike an earlier note in this file claimed, `genvm-lint` is real,
+separately installable (`pip install genvm-linter` — a real PyPI package,
+distinct from `genlayer-test`), and is wired into
+`.github/workflows/ci.yml`, running on every PR alongside this pytest
+suite:
+
+```bash
+genvm-lint check contracts/verdict_contract.py --json
+```
+
+It validates GenVM-specific structural rules this pytest suite's stub
+`genlayer` module cannot check — it caught a real one during development:
+a contract method declared `@staticmethod` failed lint with "must have
+'self' as first parameter," a GenVM-specific convention plain Python
+doesn't enforce.
 
 ## What's still not automated (would need a funded CI wallet / local GenVM)
 
-- **`genvm-lint` static analysis** — the installed CLI version
-  (`genlayer` v0.39.2) has no `genvm-lint` subcommand at all (checked
-  `genlayer --help`: only `deploy/call/write/schema/code/receipt/trace/
-  appeal/...` exist). Nothing to run even if wired into CI.
 - **Local multi-validator GenVM simulator** (`genlayer up` / `genlayer
   init`) — this exists and doesn't need a funded StudioNet wallet, but
   does need a real LLM provider API key (OpenAI/Heurist/Gemini/XAI) for

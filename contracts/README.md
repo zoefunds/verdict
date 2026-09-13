@@ -60,7 +60,7 @@ about it as a weakening (not disqualifying) signal rather than erroring —
 and this pattern repeated identically across every v4 test case below, not
 just the one v3 case.
 
-**v4 (current)** — `0x2BEe5eBb18c8E0D82E68Fc103fA68dfC0e876E58`. No
+**v4** — `0x2BEe5eBb18c8E0D82E68Fc103fA68dfC0e876E58` (retired). No
 functional changes from v3 — this redeploy exists because the database was
 being reset for a clean multi-product test round (see
 `docs/SECURITY.md` "Multi-product live lifecycle audit") and a fresh
@@ -85,6 +85,28 @@ trigger for real within a normal testing session; admin/owner-only
 methods (`set_*`, `sweep_treasury`, `transfer_ownership`,
 `propose_constitution_amendment`) were out of scope per the request that
 prompted this round.
+
+**v5 (current)** — `0xc4650C47245FDF354b1502FE9533BD944087cB88`. Deployed
+to pick up the structured, evidence-linked verdict architecture (see
+section 5.7 below) added the same day — no changes to `submit_evidence`
+or any other method signature from v4. `genlayer schema` confirmed the
+deployed bytecode matches checked-in source exactly, including every
+method's parameter list, before any test transaction was sent.
+
+This was the **first live confirmation the structured-verdict
+architecture actually works** against a real model, not just the unit
+tests in `tests/contract/`: a real `render_verdict` call produced a
+genuine `claim_findings` array (citing specific evidence ids per claim)
+and `evidence_findings` map on its first successful attempt, and a real
+`resolve_appeal` exercised the new equivalence tolerance under a 4-item
+evidence set — see `docs/SECURITY.md` "v5 contract: 2-test round" for
+the full write-up, including 7 genuine `MAJORITY_DISAGREE` rounds before
+that appeal reached agreement (informative about the tolerance under
+real conditions, not a bug — no invalid state was ever written by a
+disagreeing round). 2 independent, fully-detailed product-dispute test
+cases exercised 11 of 12 non-admin write methods (all except
+`claim_case_abandonment`, infeasible for the same reason as prior
+rounds); admin/owner-only methods were out of scope.
 
 ## Contents
 

@@ -88,7 +88,7 @@ the new schema.
 the full, current deployment walkthrough (prerequisites, `genlayer deploy`
 invocation, verification steps, and how to obtain the resulting contract
 address). Current production address:
-`0x2BEe5eBb18c8E0D82E68Fc103fA68dfC0e876E58` ("v4" — see
+`0xc4650C47245FDF354b1502FE9533BD944087cB88` ("v5" — see
 `contracts/README.md` for what changed across versions).
 
 Once you have a new address, wire it into:
@@ -105,10 +105,24 @@ success from a green deploy log:
 
 1. **Real read**: `genlayer schema <address>` — confirms the contract loads
    and every method's parameter list matches the checked-in source exactly
-   (this catches a stale-deploy mismatch immediately).
+   (this catches a stale-deploy mismatch immediately). Before relying on
+   any read result, confirm `genlayer --version` — the global CLI has
+   been observed to silently auto-update mid-session to a broken release
+   candidate that fails every read against every contract with a generic
+   `exit_code 1` error; if reads that worked earlier suddenly all fail
+   identically, check the CLI version before assuming the contract is
+   broken (`npm install -g genlayer@0.39.2` is the last confirmed-working
+   version as of this writing).
 2. **Real write**: submit a real transaction (case creation is the natural
-   first one) and confirm `FINALIZED`/`MAJORITY_AGREE` consensus, not just
-   an HTTP 200 from whatever client submitted it.
+   first one) and confirm the receipt's actual **result** field
+   (`result_name`/`resultName`, e.g. `MAJORITY_AGREE`), not just its
+   **status** field (`status_name`/`statusName`, e.g. `FINALIZED`) —
+   a genuinely disagreed consensus round (`MAJORITY_DISAGREE`) still
+   reaches `FINALIZED` status, so checking status alone can silently
+   treat a real disagreement as success. Confirmed the hard way: an
+   earlier test script that checked only status caused 3 duplicate cases
+   before this was caught (see `docs/SECURITY.md` "v5 contract: 2-test
+   round").
 3. **Indexer pickup**: confirm the resulting state change reaches
    Postgres — `curl https://verdict-backend.fly.dev/cases/<id>` and check
    `status` matches the on-chain value. If it doesn't update within a

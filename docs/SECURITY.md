@@ -619,32 +619,140 @@ contract directly (rather than through the frontend/API) will need this
 same backfill step — see the README's "Testing this yourself" section and
 consider that a standing note, not a surprise to rediscover each time.
 
+## v5 contract: 2-test round, first live confirmation of structured verdicts (2026-09-12)
+
+Requested explicitly: redeploy, clear the database again, run exactly 2
+full product tests with real detailed data against the new contract
+(`0xc4650C47245FDF354b1502FE9533BD944087cB88`, "v5" — no functional
+changes from v4's contract logic; redeployed specifically to pick up the
+structured-verdict architecture added earlier the same day), covering
+every non-admin method.
+
+### Two tests
+
+1. **Freelance milestone escrow dispute** (case 0) — a contractor suing
+   for a withheld final payment after a live, attended demo. Exercised
+   `create_case`, `add_case_rule`, `fund_respondent_stake`,
+   `submit_evidence` (TEXT_STATEMENT + TX_RECORD),
+   `close_evidence_window_early`, `request_investigation`,
+   `render_verdict`, `file_appeal`, `open_appeal_evidence_window`,
+   `resolve_appeal`, `settle_case` — 11 of 12 non-admin write methods.
+   - **First verdict**: `PARTIAL`, 75/25 favoring the claimant, 58%
+     confidence. Real `claim_findings` (5 distinct claims, each citing
+     specific evidence ids) and `evidence_findings`
+     (`{"0": "SUPPORTS_CLAIMANT", "1": "SUPPORTS_CLAIMANT", "2":
+     "SUPPORTS_RESPONDENT"}`) — the first time this structure was ever
+     produced by a real model rather than a unit-test fixture, and it
+     matched the intended shape and semantics on the very first
+     successful attempt.
+   - **Appeal**: respondent submitted an independently-generated
+     platform audit log directly addressing the first verdict's stated
+     evidentiary gap. The appeal **genuinely moved the outcome** to
+     60/40 (still `PARTIAL`, less favorable to the claimant), with
+     `evidence_findings` updating to reflect the new evidence
+     (`"3": "SUPPORTS_RESPONDENT"`) and a new claim finding
+     (`"A double-booking defect attributable to the widget's
+     calendar-sync module occurred after delivery"`, `SUPPORTED_RESPONDENT`).
+   - **Settled.**
+2. **Marketplace item dispute** (case 3) — exercised `create_case` and
+   `cancel_case` specifically: claimant withdrew after reaching a private
+   resolution before the respondent funded. Cleanly cancelled, full
+   refund confirmed.
+
+`claim_case_abandonment` and admin/owner-only methods were out of scope,
+same as the prior round and for the same reasons.
+
+### The evidence-findings equivalence tolerance under real conditions — a genuine, informative finding
+
+Test 1's `resolve_appeal` (4 evidence items after the appeal, tolerance:
+at most 1 mismatch) hit **7 consecutive genuine `MAJORITY_DISAGREE`
+results** across two attempt batches before finally reaching agreement on
+the 4th attempt of the second batch. This is real, useful signal about
+the stricter structured-verdict equivalence check added earlier the same
+day — the tolerance is tight enough that a case with several evidence
+items and at least one genuinely close-call classification can need
+several fresh leader/validator draws before two independent LLM calls
+land within tolerance of each other. Not a contract bug (no invalid state
+was ever written by a disagreeing round — confirmed by reading `get_case`
+between attempts and seeing the case still cleanly in `RE_INVESTIGATION`
+throughout), and the run did eventually succeed without any contract
+change — but worth carrying forward: `_evidence_findings_agree`'s
+tolerance (0 mismatches ≤2 items, 1 mismatch otherwise) may be worth
+revisiting for cases with larger evidence counts in a future contract
+version, based on this real data point rather than a guess.
+
+### Two real bugs found and fixed — both in this round's test tooling, not the contract
+
+1. **The `genlayer` CLI silently auto-updated mid-session to a broken
+   release candidate (`0.40.0-rc.3`).** Every read against every
+   contract — old and new alike — started failing with a generic
+   `exit_code 1` / `ValueError: call to private method
+   Contract.__handle_undefined_method__` error. Diagnosed by confirming
+   the exact same failure occurred against the previously-working v4
+   contract, which ruled out anything about the new deployment or recent
+   contract changes. Fixed with `npm install -g genlayer@0.39.2`
+   (the last confirmed-working version). A real reminder that a globally-
+   installed CLI can silently drift mid-session — worth pinning or
+   checking `genlayer --version` at the start of any future testing
+   round that behaves unexpectedly.
+2. **The test harness's `write()` helper accepted a `FINALIZED` status
+   as success without checking that the actual consensus *result* was an
+   agreement**, not just that the round concluded. A round that
+   genuinely disagrees (`MAJORITY_DISAGREE`) still reaches `status_name:
+   "FINALIZED"` — it's the *result*, not the status, that says whether
+   the disagreement or agreement happened. This caused 3 duplicate test
+   cases to get created (each `create_case` retry that "failed" the old,
+   wrong check had actually already succeeded on-chain) before being
+   caught — confirmed via `get_case_count` unexpectedly returning `3`.
+   Cleaned up by cancelling the 2 true duplicates via `cancel_case`
+   (neither had been funded — no financial exposure) and continuing the
+   real test from the one usable case. Fixed by checking the receipt's
+   actual `result_name` field against an explicit accepted-results set
+   (`MAJORITY_AGREE`/`AGREE`) in addition to the status. This class of
+   bug is specific to this session's throwaway test scripts — the app's
+   own real write paths (`frontend/lib/genlayer.ts`) don't have an
+   equivalent bug, since the frontend never auto-retries a write purely
+   based on transaction status.
+
+Both cases created by calling the contract directly (same reason as
+prior rounds — precise, scriptable control to exercise every method) had
+no matching Postgres rows and needed the same backfill step as before
+(`backend/src/db/backfill_e2e_test_cases_v5.ts`) — confirmed, not a
+surprise, per the standing note added after the v4 round.
+
 ## Known gaps / follow-up before real-value production use
 
-- [ ] **The structured, evidence-linked verdict architecture (above) has
-      NOT yet been verified against a real GenVM/LLM call.** It's
-      confirmed correct by 18 passing unit tests and a clean `genvm-lint`
-      pass, both of which validate parsing/equivalence logic and contract
-      structure — neither exercises a real model actually producing
-      `claim_findings`/`evidence_findings` in the requested shape under
-      real conditions. That needs a fresh contract deployment (done by the
-      project owner, never automated — see "Redeploying the contract" in
-      the README) followed by a real lifecycle run, e.g. via
-      `scripts/verification/lifecycle_demo.mjs`. Stated plainly rather
-      than implied as done.
+- [x] ~~The structured, evidence-linked verdict architecture has not been
+      verified against a real GenVM/LLM call~~ — **resolved 2026-09-12**:
+      verified live against the v5 contract. A real `render_verdict` call
+      produced a genuine `claim_findings` array (citing specific evidence
+      ids per claim) and `evidence_findings` map on the first attempt, and
+      a real `resolve_appeal` exercised the stricter evidence-findings
+      equivalence tolerance under a 4-item evidence set — see "v5 contract:
+      2-test round" below for the full detail, including 7 genuine
+      `MAJORITY_DISAGREE` rounds before agreement, a real and informative
+      finding about that tolerance under real conditions.
 - [ ] Real local GenVM validator-consensus test run via `genlayer up`
       localnet mode — tooling and Docker are confirmed working, blocked
       only on an LLM provider API key (OpenAI/Heurist/Gemini/XAI) for the
       validators' `gl.nondet.exec_prompt` calls, which does not exist in
       this environment. Supplying one key unblocks this; it does not need
       a funded StudioNet wallet, only a provider key.
-- [ ] `genvm-lint`-equivalent / direct validator tests with divergent
-      fetch/LLM mocks, and turning the one-off real end-to-end lifecycle
-      run (see "Live end-to-end lifecycle audit" below — this DID happen,
-      manually, once) into a repeatable CI job. Needs either a funded
+- [x] ~~No `genvm-lint` equivalent~~ — **resolved**: `genvm-lint` is a
+      real, separately-installable tool (`pip install genvm-linter`,
+      distinct from `genlayer-test`) and is now wired into
+      `.github/workflows/ci.yml`, running on every PR alongside the pytest
+      suite. It caught a real GenVM-specific structural bug immediately
+      (a `@staticmethod` helper — GenVM contract methods must take `self`).
+- [ ] Turning the one-off real end-to-end lifecycle runs (three rounds so
+      far — see "Live end-to-end lifecycle audit", "Multi-product live
+      lifecycle audit", and "v5 contract: 2-test round" below — all done
+      manually) into a repeatable CI job. Needs either a funded
       CI-dedicated wallet or a local GenVM simulator with fast-forwardable
-      time, since the real run needed real wall-clock waiting for the
+      time, since real runs need real wall-clock waiting for the
       contract's own evidence/appeal-window deadlines to close.
+      `scripts/verification/lifecycle_demo.mjs` is the documented,
+      repeatable (manual) version of this.
 - [ ] Formal external audit of `contracts/verdict_contract.py` before any
       non-testnet deployment.
 - [ ] Automated dependency vulnerability scanning (`npm audit` / Dependabot)

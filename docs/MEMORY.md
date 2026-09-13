@@ -955,3 +955,66 @@ what's worth remembering here:
   script built on the exact genlayer-js pattern already proven live
   earlier this project (private-key `createAccount`/`createClient`,
   since `genlayer write` can't send payable value), not a fresh guess.
+
+## v5 contract deployed — first live confirmation of structured verdicts (2026-09-12/13)
+
+User redeployed with the structured-verdict architecture included,
+provided `0xc4650C47245FDF354b1502FE9533BD944087cB88`, and asked for
+exactly 2 full product tests covering every non-admin method, DB cleared
+first. Full technical write-up: `docs/SECURITY.md` "v5 contract: 2-test
+round". What's worth remembering:
+
+- **Read failures against BOTH the old and new contract, identically,
+  was the tell that this was an environment problem, not a contract
+  problem.** Before touching a single line of contract code in response
+  to a scary-looking `exit_code 1` error, reproduced the exact same
+  failure against a contract that had been working fine hours earlier —
+  that single comparison ruled out "something about my recent contract
+  changes" immediately and correctly pointed at the globally-installed
+  `genlayer` CLI, which had silently auto-updated to `0.40.0-rc.3`
+  mid-session. Downgrading to `0.39.2` fixed it instantly. **Lesson:
+  when something that worked recently suddenly breaks everywhere at
+  once, check what changed in the environment before assuming the most
+  recently-edited code is at fault.**
+- **A real, costly bug in my own test harness**: `write()` treated a
+  `FINALIZED` status as success without checking the actual `result_name`
+  — a genuinely disagreed round (`MAJORITY_DISAGREE`) still reaches
+  `FINALIZED` status, it's the *result* field that says whether it was
+  an agreement. This silently let 3 duplicate `create_case` calls through
+  before `get_case_count` returning `3` instead of `1` gave it away.
+  Recovered cleanly: none of the duplicates had been funded, so
+  `cancel_case` closed them with zero financial exposure, and the real
+  test continued from the one case that already had real progress
+  (`add_case_rule` applied) rather than starting over. **Lesson: always
+  check the receipt's result field, never just its status field, when
+  writing any future test/verification script against this contract —
+  now documented in the README and DEPLOYMENT.md so this doesn't need
+  rediscovering.**
+- **Real, positive result once the harness was fixed**: the structured-
+  verdict architecture (added earlier the same day, never live-tested)
+  worked correctly on its very first real attempt — `render_verdict`
+  produced valid `claim_findings` and `evidence_findings` with no
+  malformed-output errors. The appeal on that same case then hit 7
+  genuine `MAJORITY_DISAGREE` rounds before agreeing — confirmed via
+  `get_case` between attempts that no invalid state was ever written by
+  a disagreeing round, so this was safe to keep retrying rather than
+  something to panic about. Real, useful data point (not a guess) that
+  `_evidence_findings_agree`'s tolerance may warrant revisiting for
+  larger evidence counts in a future contract version — flagged in
+  SECURITY.md rather than acted on unilaterally, since the contract is
+  already deployed and any such change needs the user's call.
+- Same backfill need as every prior round (cases created by calling the
+  contract directly have no DB row) — no longer surprising, handled
+  immediately as expected maintenance (`backfill_e2e_test_cases_v5.ts`),
+  not rediscovered as a new problem.
+
+Afterward, did a full documentation sweep at the user's explicit request
+("update all documents... remove all stale information"): updated
+README.md, contracts/README.md, docs/DEPLOYMENT.md, docs/GENLAYER.md,
+docs/SECURITY.md, and tests/contract/README.md — all still referenced the
+retired v4 address as current, and tests/contract/README.md still
+falsely claimed `genvm-lint` didn't exist as an installable tool (it does
+— `pip install genvm-linter` — and has been wired into CI since the
+structured-verdict work). Also removed a now-resolved "known gap" entry
+(structured verdict unverified against real LLM) that the v5 round had
+just closed, rather than leaving it stale.
