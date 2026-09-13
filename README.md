@@ -353,10 +353,10 @@ or the deployment.
   "Known operational gotcha" above.
 - **Test commands**:
   ```bash
-  python3 -m pytest tests/contract/test_verdict_parsing.py -v   # 37 tests, pure contract logic
+  python3 -m pytest tests/contract/test_verdict_parsing.py -v   # 42 tests, pure contract logic
   genvm-lint check contracts/verdict_contract.py --json         # GenVM structural validation
   cd backend && npm run lint && npm test && npm run build       # 19 tests
-  cd frontend && npm run lint && npm run build
+  cd frontend && npm run lint && npm test && npm run build      # 17 tests
   ```
 - **CI**: every PR and push to `main` runs all of the above except the
   live-transaction harness (see badge at the top of this file and
