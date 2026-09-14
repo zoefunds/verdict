@@ -86,7 +86,7 @@ methods (`set_*`, `sweep_treasury`, `transfer_ownership`,
 `propose_constitution_amendment`) were out of scope per the request that
 prompted this round.
 
-**v5 (current)** — `0xc4650C47245FDF354b1502FE9533BD944087cB88`. Deployed
+**v5** — `0xc4650C47245FDF354b1502FE9533BD944087cB88` (retired). Deployed
 to pick up the structured, evidence-linked verdict architecture (see
 section 5.7 below) added the same day — no changes to `submit_evidence`
 or any other method signature from v4. `genlayer schema` confirmed the
@@ -106,7 +106,38 @@ real conditions, not a bug — no invalid state was ever written by a
 disagreeing round). 2 independent, fully-detailed product-dispute test
 cases exercised 11 of 12 non-admin write methods (all except
 `claim_case_abandonment`, infeasible for the same reason as prior
-rounds); admin/owner-only methods were out of scope.
+rounds); admin/owner-only methods were out of scope. Retired after a
+re-audit found the equivalence tolerance above (one mismatch allowed
+above 2 evidence items) could let a genuinely decisive disagreement pass
+as consensus — v6 carries the fix.
+
+**v6 (current)** — `0x41e2bD175ce730ec613e5977a069dC5061A271E2`. Deployed
+to pick up two re-audit hardening fixes over v5 (see section 5.7 below
+for the full detail): `_evidence_findings_agree` now requires **exact**
+agreement on every decisive finding, zero tolerance regardless of
+evidence count (only two non-decisive labels may ever differ), and every
+`claim_findings[].evidence_ids` citation is now validated against the
+case's real on-chain evidence set — citing a fabricated or out-of-case id
+is rejected as malformed output. No `submit_evidence` or other method
+signature changes from v5. `genlayer schema` confirmed the deployed
+bytecode matches checked-in source exactly before any test transaction
+was sent.
+
+2 more independent, fully-detailed product-dispute test cases exercised
+every non-admin method — see `docs/SECURITY.md` "v6 contract: 2-test
+round" for the full write-up. The first verdict came back a well-reasoned
+`INCONCLUSIVE` at 73% confidence given only uncorroborated
+text-statement evidence, and the appeal's `resolve_appeal` needed real
+retries under the now-stricter equivalence rule (multiple genuine
+`MAJORITY_DISAGREE` rounds) before settling — exactly the validator
+behavior expected from tightening zero-tolerance on decisive findings,
+confirmed live rather than assumed; no invalid state was ever written by
+a disagreeing round. A separate real bug was found and fixed in this
+round, outside the contract: the frontend's escrow display derives
+"Locked"/"Pending" from a Postgres column every prior backfill script
+left null, showing "Pending"/"0 GEN" on fully settled cases — fixed by
+deriving real lock timestamps from the contract's own
+`CASE_CREATED`/`RESPONDENT_FUNDED` event log instead.
 
 ## Contents
 

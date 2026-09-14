@@ -25,7 +25,7 @@ DISAGREEMENT -> RULES -> COLLATERAL -> EVIDENCE -> GENLAYER INVESTIGATION -> VER
 |---|---|---|
 | Frontend | [ver-dict.vercel.app](https://ver-dict.vercel.app) | Live |
 | Backend API | `verdict-backend.fly.dev` | Live, always-on (Fly.io) |
-| Contract | `0xc4650C47245FDF354b1502FE9533BD944087cB88` (StudioNet) | Live — "v5" |
+| Contract | `0x41e2bD175ce730ec613e5977a069dC5061A271E2` (StudioNet) | Live — "v6" |
 
 The contract has gone through several deployments as external audits found
 and fixed real issues (hash-truncation canonicalization, DNS-rebinding SSRF,
@@ -193,8 +193,8 @@ Key ones you'll need:
 ## Testing this yourself
 
 Every non-admin read and write method on the live contract has been
-exercised with **real signed transactions on StudioNet**, across three
-rounds and three contract deployments — not a simulator, not mocked:
+exercised with **real signed transactions on StudioNet**, across four
+rounds and four contract deployments — not a simulator, not mocked:
 
 - **v3 round**: one full lifecycle (`create_case` → `fund_respondent_stake`
   → `submit_evidence` → `request_investigation` → `render_verdict` →
@@ -210,22 +210,41 @@ rounds and three contract deployments — not a simulator, not mocked:
   exercised `cancel_case` instead. `add_case_rule` was exercised in one
   case and the LLM verdict explicitly cited the added rule by name in its
   reasoning.
-- **v5 round** (current contract): **2 independent product-dispute
-  scenarios** — a freelance milestone escrow dispute (full lifecycle
-  including a real appeal that genuinely moved the verdict from a 75/25
-  to a 60/40 split) and a marketplace dispute exercising `cancel_case`.
-  This was the **first live confirmation of the structured, evidence-
-  linked verdict architecture** (`claim_findings`/`evidence_findings` —
-  see "How it actually works" above and `contracts/README.md` section
-  5.7): a real `render_verdict` call produced the required structure
-  correctly on its first attempt, citing specific evidence ids per claim.
-  A real `resolve_appeal` under a 4-item evidence set hit 7 genuine
-  `MAJORITY_DISAGREE` rounds before reaching agreement — real, informative
-  signal about the new equivalence tolerance under real conditions, not a
-  bug (confirmed: no invalid state was ever written by a disagreeing
-  round).
+- **v5 round**: **2 independent product-dispute scenarios** — a freelance
+  milestone escrow dispute (full lifecycle including a real appeal that
+  genuinely moved the verdict from a 75/25 to a 60/40 split) and a
+  marketplace dispute exercising `cancel_case`. This was the **first live
+  confirmation of the structured, evidence-linked verdict architecture**
+  (`claim_findings`/`evidence_findings` — see "How it actually works"
+  above and `contracts/README.md` section 5.7): a real `render_verdict`
+  call produced the required structure correctly on its first attempt,
+  citing specific evidence ids per claim. A real `resolve_appeal` under a
+  4-item evidence set hit 7 genuine `MAJORITY_DISAGREE` rounds before
+  reaching agreement — real, informative signal about the equivalence
+  tolerance at the time under real conditions, not a bug (confirmed: no
+  invalid state was ever written by a disagreeing round).
+- **v6 round** (current contract): **2 more independent product-dispute
+  scenarios** — a consulting-fee dispute (full lifecycle with a real
+  appeal) and a digital-art commission cancellation. This contract carries
+  the re-audit hardening fixes: `_evidence_findings_agree` now requires
+  **exact** agreement on every decisive finding (zero tolerance,
+  regardless of evidence count — the v5 round's numeric tolerance was
+  found to be too loose), and every `claim_findings[].evidence_ids`
+  citation is now validated against the case's real on-chain evidence set.
+  Confirmed live: the first verdict came back a well-reasoned
+  `INCONCLUSIVE` at 73% confidence (correctly declining to favor either
+  side given only uncorroborated text-statement evidence), and the
+  appeal's `resolve_appeal` needed real retries under the now-stricter
+  equivalence rule (multiple genuine `MAJORITY_DISAGREE` rounds — the
+  exact validator behavior expected from tightening zero-tolerance on
+  decisive findings) before settling. Also surfaced and fixed a real,
+  separate bug: the frontend's escrow display derives "Locked"/"Pending"
+  from a Postgres timestamp the backfill scripts had never populated,
+  showing "Pending"/"0 GEN" on fully settled cases — fixed by deriving the
+  real lock timestamps from the contract's own `CASE_CREATED`/
+  `RESPONDENT_FUNDED` event log instead of leaving them null.
 
-Across all three rounds: `claim_case_abandonment` is the one method
+Across all four rounds: `claim_case_abandonment` is the one method
 deliberately never exercised — its grace period is a hard-coded 14 days
 on-chain (`ABANDONMENT_GRACE_SECONDS`), not feasible to wait out live.
 Every write that reached agreement reached `FINALIZED`/`MAJORITY_AGREE`
@@ -241,13 +260,15 @@ All resulting cases are fully synced end to end and visible right now at
 settled cases are listed publicly (the casebook only lists resolved
 disputes by design); cancelled cases are reachable directly by ID. Full
 write-ups: `docs/SECURITY.md` → "Live end-to-end lifecycle audit" (v3),
-"Multi-product live lifecycle audit" (v4), and "v5 contract: 2-test round"
-(v5) — including every real bug this testing found and fixed: a StudioNet
-daily RPC quota silently starving the indexer, a metrics undercounting
-bug, evidence/case-visibility gaps caused by testing directly against the
-contract instead of through the app's normal flow (now a documented,
-expected pattern with a standing backfill fix — see
-`backend/src/db/backfill_e2e_test_cases*.ts`), a `genlayer` CLI silent
+"Multi-product live lifecycle audit" (v4), "v5 contract: 2-test round"
+(v5), and "v6 contract: 2-test round" (v6) — including every real bug
+this testing found and fixed: a StudioNet daily RPC quota silently
+starving the indexer, a metrics undercounting bug, evidence/case-
+visibility gaps caused by testing directly against the contract instead
+of through the app's normal flow (now a documented, expected pattern with
+a standing backfill fix — see `backend/src/db/backfill_e2e_test_cases*.ts`),
+a backfilled case's escrow-lock timestamp being left null and showing
+"Pending"/"0 GEN" on fully settled cases, a `genlayer` CLI silent
 auto-update to a broken release candidate that broke every read until
 downgraded, and a test-harness bug that mistook a `FINALIZED` status for
 success without checking the actual consensus result.
@@ -338,14 +359,14 @@ or the deployment.
 
 ## For reviewers
 
-- **Deployed contract**: `0xc4650C47245FDF354b1502FE9533BD944087cB88` on
+- **Deployed contract**: `0x41e2bD175ce730ec613e5977a069dC5061A271E2` on
   GenLayer StudioNet (chain id `61999`, RPC `https://studio.genlayer.com/api`).
   This is the ONLY contract in this system — there is no second contract,
   no off-chain adjudication service, and no path by which the backend can
   independently decide a verdict (see "Why this cannot fairly be
   centralized" in `docs/GENLAYER.md`).
 - **Verify the deployed source matches this repo**: `genlayer schema
-  0xc4650C47245FDF354b1502FE9533BD944087cB88` returns every method's exact
+  0x41e2bD175ce730ec613e5977a069dC5061A271E2` returns every method's exact
   parameter list; diff it against `contracts/verdict_contract.py`'s public
   methods. This exact check is what caught a real stale-deployment
   mismatch earlier in this project (see `docs/SECURITY.md`) — it isn't a
@@ -361,14 +382,16 @@ or the deployment.
 - **CI**: every PR and push to `main` runs all of the above except the
   live-transaction harness (see badge at the top of this file and
   `.github/workflows/ci.yml`).
-- **Live lifecycle evidence**: `docs/SECURITY.md` documents three full
-  live testing rounds across three contract deployments — every non-admin
+- **Live lifecycle evidence**: `docs/SECURITY.md` documents four full
+  live testing rounds across four contract deployments — every non-admin
   read/write method exercised with real signed StudioNet transactions,
   real conflicting evidence, real appeals, real GenVM consensus (including
   genuine `MAJORITY_DISAGREE` splits resolved by retry), and real
   settlements moving real GEN — plus the first live confirmation the
   structured, evidence-linked verdict architecture works against a real
-  model (v5 round). `scripts/verification/lifecycle_demo.mjs` is a
+  model (v5 round) and confirmation the re-audit-hardened, zero-tolerance
+  equivalence rule behaves correctly under real conditions (v6 round).
+  `scripts/verification/lifecycle_demo.mjs` is a
   repeatable, documented harness for reproducing this against the current
   deployment yourself (needs two funded StudioNet keys — see its README;
   deliberately kept outside CI, see that file for why).

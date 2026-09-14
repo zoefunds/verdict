@@ -62,16 +62,18 @@ comparison) → `file_appeal` → `open_appeal_evidence_window` →
 
 Full write-up, including the exact consensus data observed for each call:
 `docs/SECURITY.md` → "Live end-to-end lifecycle audit", "Multi-product
-live lifecycle audit", and "v5 contract: 2-test round" — three full live
-testing rounds across three contract deployments so far, each covering
-every non-admin method with real, detailed dispute scenarios. This is
-NOT part of this pytest suite — it's one-off manual script-driven runs
-against real infrastructure, not something CI can currently repeat on
-demand (see "What's still not automated" below). The most recent round
-was also the first live confirmation that the structured, evidence-linked
-verdict architecture (`claim_findings`/`evidence_findings` — see
-`contracts/README.md` section 5.7) actually works against a real model,
-not just the unit tests below.
+live lifecycle audit", "v5 contract: 2-test round", and "v6 contract:
+2-test round" — four full live testing rounds across four contract
+deployments so far, each covering every non-admin method with real,
+detailed dispute scenarios. This is NOT part of this pytest suite — it's
+one-off manual script-driven runs against real infrastructure, not
+something CI can currently repeat on demand (see "What's still not
+automated" below). The v5 round was the first live confirmation that the
+structured, evidence-linked verdict architecture (`claim_findings`/
+`evidence_findings` — see `contracts/README.md` section 5.7) actually
+works against a real model, not just the unit tests below. The v6 round
+confirmed the re-audit-hardened, zero-tolerance equivalence rule behaves
+correctly under real conditions.
 
 ## What IS automated: `genvm-lint`
 

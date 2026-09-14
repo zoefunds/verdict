@@ -1018,3 +1018,82 @@ falsely claimed `genvm-lint` didn't exist as an installable tool (it does
 structured-verdict work). Also removed a now-resolved "known gap" entry
 (structured verdict unverified against real LLM) that the v5 round had
 just closed, rather than leaving it stale.
+
+## Re-audit hardening + v6 contract + escrow display bug (2026-09-13/14)
+
+A re-audit gave a precise, specific critique rather than a vague "make it
+better": the evidence-findings equivalence tolerance (1 mismatch allowed
+above 2 items) wasn't a robust validation bar, and cited `evidence_ids`
+in `claim_findings` were never checked against the case's real evidence
+set. Both fixed directly in the contract, not worked around elsewhere:
+
+- `_evidence_findings_agree` rewritten around a deterministic materiality
+  rule (decisive vs non-decisive findings) instead of a numeric-count
+  tolerance — exact agreement required on anything that actually bears on
+  the outcome, tolerance only between two labels that both mean "this
+  doesn't decide anything." Kept the existing test file's `_agree(None,
+  leader, validator)` unbound-call pattern working by keeping the new
+  logic as a module-level function, not a method — same discipline as
+  every other pure verdict-parsing helper in that file.
+- `_parse_claim_findings` now takes `evidence_ids` and rejects any cited
+  id not in that set. Small, surgical addition — reused the exact same
+  ERR_LLM-raising pattern already used for every other malformed-output
+  class, no new error-handling philosophy introduced.
+- Also fixed two engineering findings from the same re-audit, both
+  outside the contract: `docs/SECURITY.md` had literally opened with
+  "pre-deployment draft" despite being deployed and live-tested three
+  times over by that point — fixed the status line to actually describe
+  current reality. And the frontend's MetaMask/WalletConnect build
+  warnings were real (missing optional deps that don't apply on web) but
+  unexplained — aliased them away in `next.config.mjs` with the reasoning
+  documented inline, following the exact pattern the file already used
+  for the x402 packages.
+- Added a real frontend test suite where zero tests existed before —
+  17 tests for `hooks/useTransaction.ts`, the shared UI-to-wallet
+  transaction state machine every stake-lock/evidence-commit/appeal-bond
+  button routes through. Chose this specific hook because it was the
+  exact under-tested surface the audit named, not a generic "add some
+  tests" filler target. Hit one real test-writing bug along the way: an
+  assertion assumed `wallet-confirm` state would still be visible after
+  an `act()` call, but the callback actually runs synchronously past its
+  first `await` before `act()` returns — fixed by gating each step behind
+  a manually-resolved promise so intermediate states could be inspected
+  precisely, rather than guessing at React's batching timing.
+
+Redeployed as v6 (`0x41e2bD175ce730ec613e5977a069dC5061A271E2`) same day.
+Ran 2 more real product tests (consulting-fee dispute with appeal,
+digital-art commission cancellation) — full detail in `docs/SECURITY.md`
+"v6 contract: 2-test round". The tightened rule's real cost showed up
+immediately and honestly: this round's evidence set (4 uncorroborated
+text/tx-record items) needed real retries on both `render_verdict` and
+`resolve_appeal` — including one run interrupted by a genuine transient
+`EADDRNOTAVAIL` network error, which was correctly distinguished from a
+consensus disagreement by reading `get_case` and confirming clean state
+before retrying, rather than treating a network blip as evidence about
+the contract.
+
+**A real bug the user caught directly on the live site, not something
+testing surfaced first**: the settled case's escrow panel showed
+"Pending" on both sides and "0 GEN in escrow" despite real settlement
+having happened. Traced immediately to `EscrowBar.tsx` deriving its
+locked/pending display from `case_participants.stakeLockedAt` — a column
+every backfill script since v4 had left null, since these test cases
+never go through the app's real fund-locking flow that would normally set
+it. Fixed generically rather than just for the one visible case: pulled
+real `CASE_CREATED`/`RESPONDENT_FUNDED` timestamps from the contract's
+own event log (`get_case_events`) — an on-chain source of truth that was
+sitting right there and needed no estimation or guessing — updated the
+backfill script for future rounds, and wrote a small idempotent fix
+script that walked every already-backfilled case and repaired any with a
+null `stakeLockedAt` the same way. This class of gap (something the
+app's real user-facing flow sets automatically, that a direct-to-contract
+test script has no equivalent step for) is now the second one found
+after evidence/case-visibility — worth remembering as a general pattern
+for anything the DB backfill needs to reconstruct, not just cases and
+evidence.
+
+Afterward, did the full documentation sweep this entry itself is part
+of, at the user's explicit request: updated README.md, contracts/README.md,
+docs/DEPLOYMENT.md, docs/GENLAYER.md, docs/SECURITY.md, and
+tests/contract/README.md — all six still referenced the retired v5
+address as current.

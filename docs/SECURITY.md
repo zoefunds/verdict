@@ -1,16 +1,16 @@
 # VERDICT — Security Review
 
 Status: **live on StudioNet, actively tested** — currently deployed as
-v5 (`0xc4650C47245FDF354b1502FE9533BD944087cB88`; see "v5 contract:
-2-test round" below), through three full contract redeployments and
-three rounds of real end-to-end lifecycle testing so far (see "Live
-end-to-end lifecycle audit", "Multi-product live lifecycle audit", and
-"v5 contract: 2-test round"). This document is a running record, updated
-after each audit round and each live testing round — not a one-time
-pre-deployment snapshot. It is still not a substitute for a professional
-external audit before handling real economic value beyond StudioNet
-testnet GEN; see "Known gaps" at the end for what that would need to
-cover.
+v6 (`0x41e2bD175ce730ec613e5977a069dC5061A271E2`; see "v6 contract:
+2-test round" below), through four full contract redeployments and
+four rounds of real end-to-end lifecycle testing so far (see "Live
+end-to-end lifecycle audit", "Multi-product live lifecycle audit", "v5
+contract: 2-test round", and "v6 contract: 2-test round"). This document
+is a running record, updated after each audit round and each live testing
+round — not a one-time pre-deployment snapshot. It is still not a
+substitute for a professional external audit before handling real
+economic value beyond StudioNet testnet GEN; see "Known gaps" at the end
+for what that would need to cover.
 
 ## Authentication & session management
 
@@ -749,6 +749,112 @@ no matching Postgres rows and needed the same backfill step as before
 (`backend/src/db/backfill_e2e_test_cases_v5.ts`) — confirmed, not a
 surprise, per the standing note added after the v4 round.
 
+## v6 contract: 2-test round (2026-09-13)
+
+A re-audit of the v5 round found the `_evidence_findings_agree` tolerance
+(zero mismatches for ≤2 evidence items, one mismatch tolerated otherwise)
+was not a robust-enough validation bar — for a case with 3+ evidence
+items, that tolerance could let two independent LLM calls disagree on a
+genuinely decisive finding and still be treated as consensus. Fixed and
+redeployed the same day as v6 (`0x41e2bD175ce730ec613e5977a069dC5061A271E2`).
+See "Structured, evidence-linked verdict architecture" above for the
+contract-level fix detail (exact agreement required on every decisive
+finding, zero tolerance regardless of evidence count; only two
+non-decisive labels may ever differ). Requested explicitly: clear the
+database again, run exactly 2 more full product tests with real detailed
+data, covering every non-admin method.
+
+### Two tests
+
+1. **Consulting engagement deliverable dispute** (case 0) — a consultant
+   suing for a withheld final invoice after delivering a report the
+   respondent claimed was inadequate. Exercised `create_case`,
+   `add_case_rule`, `fund_respondent_stake`, `submit_evidence`
+   (TEXT_STATEMENT ×2 + TX_RECORD), `close_evidence_window_early`,
+   `request_investigation`, `render_verdict`, `file_appeal`,
+   `open_appeal_evidence_window`, `resolve_appeal`, `settle_case` — 11 of
+   12 non-admin write methods.
+   - **First verdict**: `INCONCLUSIVE`, 73% confidence. A genuinely
+     well-reasoned result under the tightened rule: real `claim_findings`
+     (5 distinct claims) and `evidence_findings`
+     (`{"0": "SUPPORTS_CLAIMANT", "1": "INSUFFICIENT", "2":
+     "SUPPORTS_RESPONDENT"}`) correctly recognized that with only
+     uncorroborated text statements on both sides, the core disputed
+     facts (was the report actually substandard? was nonpayment
+     justified?) couldn't be reliably established either way — this is
+     the explicit "insufficient evidence" route working exactly as
+     designed, not a failure to reach a verdict.
+   - **Appeal**: claimant submitted an independently-generated
+     file-sharing platform access log proving the report was actually
+     opened and reviewed (22-minute session, all 14 pages scrolled per
+     the platform's own telemetry) — directly addressing the first
+     verdict's stated evidentiary gap. The appeal genuinely strengthened
+     the claimant's position (`evidence_findings` updated to
+     `"3": "SUPPORTS_CLAIMANT"` for the new evidence, and one existing
+     claim finding flipped to `SUPPORTED_CLAIMANT`), but the core dispute
+     over report quality remained unresolved — `INCONCLUSIVE` correctly
+     held both times; both sides refunded their own stake.
+   - **Settled.**
+2. **Digital art commission dispute** (case 1) — exercised `create_case`
+   and `cancel_case`: claimant withdrew after the respondent voluntarily
+   refunded the deposit privately, before ever funding. Cleanly
+   cancelled, full refund confirmed.
+
+`claim_case_abandonment` and admin/owner-only methods were out of scope,
+same as every prior round and for the same reasons.
+
+### The tightened equivalence rule under real conditions — confirmed working, at a real liveness cost
+
+This round is the first live evidence of the new zero-tolerance rule's
+actual behavior, not just its intent. Case 0's evidence set (4
+uncorroborated text/tx-record items — exactly the kind of ambiguous
+evidence that makes classifying `SUPPORTS_CLAIMANT` vs `INSUFFICIENT` a
+close call) proved genuinely hard for independent LLM calls to agree on
+under zero tolerance:
+- `render_verdict` needed a second attempt-batch: 4 genuine
+  `MAJORITY_DISAGREE` results in the first batch, then agreement on the
+  very first attempt of a fresh batch.
+- `resolve_appeal` needed real retries across two separate script runs —
+  3 genuine `MAJORITY_DISAGREE` rounds in the first run (interrupted by
+  an unrelated transient `EADDRNOTAVAIL` network error, confirmed to have
+  left the case in a clean `RE_INVESTIGATION` state with `verdict_count:
+  1` and `settled: false` before retrying — a network failure, not
+  evidence about consensus), then more genuine disagreement before
+  finally settling on attempt 2 of a second batch.
+
+This is exactly the trade-off the contract's own docstrings describe:
+the new rule refuses to accept a shaky consensus on decisive findings, so
+genuinely ambiguous evidence costs more retries, but every verdict that
+does land has real leader/validator agreement on which evidence actually
+matters — not just a shared final number. No invalid state was ever
+written by any disagreeing round, confirmed by reading `get_case` between
+every retry.
+
+### One real bug found and fixed — outside the contract, in the app's own backfill tooling
+
+The frontend's `EscrowBar` component derives its "Locked"/"Pending"
+display from `case_participants.stakeLockedAt` in Postgres — a field only
+ever populated by the app's real fund-locking flow (`routes/cases.ts`),
+which every backfill script since v4 has left `null` (since these test
+cases are created by calling the contract directly, never through that
+flow). The result: a fully settled case, with both stakes genuinely
+locked and paid out on-chain, displayed "Pending" on both sides and
+"Total collateral in escrow: 0 GEN" — a real, user-visible bug the
+project owner caught directly on the live site, not something surfaced
+by testing. Root-caused immediately (traced to `EscrowBar.tsx`'s
+`stakeLockedAt`-derived `locked` boolean) and fixed two ways: (1)
+`backend/src/db/backfill_e2e_test_cases_v6.ts` now derives real lock
+timestamps from the contract's own `CASE_CREATED`/`RESPONDENT_FUNDED`
+event log (`get_case_events`) for future backfills, and (2)
+`backend/src/db/fix_backfilled_stake_locks.ts` retroactively fixed both
+of this round's already-backfilled cases the same way — confirmed via
+the live API that both participants on case 0 now show real, correct
+lock timestamps.
+
+Both cases from this round needed the same on-chain-only-case Postgres
+backfill as every prior round, now a fully expected step, not a
+rediscovered surprise.
+
 ## Known gaps / follow-up before real-value production use
 
 - [x] ~~The structured, evidence-linked verdict architecture has not been
@@ -773,10 +879,11 @@ surprise, per the standing note added after the v4 round.
       `.github/workflows/ci.yml`, running on every PR alongside the pytest
       suite. It caught a real GenVM-specific structural bug immediately
       (a `@staticmethod` helper — GenVM contract methods must take `self`).
-- [ ] Turning the one-off real end-to-end lifecycle runs (three rounds so
+- [ ] Turning the one-off real end-to-end lifecycle runs (four rounds so
       far — see "Live end-to-end lifecycle audit", "Multi-product live
-      lifecycle audit", and "v5 contract: 2-test round" below — all done
-      manually) into a repeatable CI job. Needs either a funded
+      lifecycle audit", "v5 contract: 2-test round", and "v6 contract:
+      2-test round" — all done manually) into a repeatable CI job. Needs
+      either a funded
       CI-dedicated wallet or a local GenVM simulator with fast-forwardable
       time, since real runs need real wall-clock waiting for the
       contract's own evidence/appeal-window deadlines to close.

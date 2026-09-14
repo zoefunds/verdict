@@ -227,28 +227,24 @@ the v3 evidence-visibility gap before appearing on the frontend; see
 pick up the structured-verdict architecture added the same day as v5's
 deployment (see below) — v4's source predates it.
 
-**v5 deployed and wired in (current):**
-`0xc4650C47245FDF354b1502FE9533BD944087cB88` is the current production
-contract, wired into the Fly.io backend (`VERDICT_CONTRACT_ADDRESS`
-secret), the indexer, and the Vercel frontend
-(`NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS`). Verified against real StudioNet
-state via the `genlayer` CLI before any test transaction: `genlayer schema
-0xc4650C...` confirmed the contract loads and every method's parameter
-list matches checked-in source exactly, `genlayer call 0xc4650C...
-get_protocol_config` returned live config, and `get_case_count` returned
-`0` (fresh deployment). All prior-contract data was cleared from Postgres
-before testing began, per the request that prompted this round.
+**Superseded deployment (retired):**
+`0xc4650C47245FDF354b1502FE9533BD944087cB88` ("v5") was deployed, wired
+in, and CLI-verified the same way v4 was — `genlayer schema` confirmed
+the contract loads and every method's parameter list matches checked-in
+source exactly before any test transaction was sent, `get_case_count`
+returned `0` on a fresh deployment, and all prior-contract data was
+cleared from Postgres before testing began.
 
-Every non-admin read and write method was then exercised across 2
-independent, fully-detailed product-dispute test cases — full write-up
-in `docs/SECURITY.md` "v5 contract: 2-test round". This was the **first
-live confirmation the structured-verdict architecture (`claim_findings`/
+Every non-admin read and write method was exercised across 2 independent,
+fully-detailed product-dispute test cases — full write-up in
+`docs/SECURITY.md` "v5 contract: 2-test round". This was the **first live
+confirmation the structured-verdict architecture (`claim_findings`/
 `evidence_findings`, added the same day) actually works** against a real
 model: a real `render_verdict` call produced the required structure
 correctly on its first attempt. A real `resolve_appeal` under a 4-item
 evidence set hit 7 genuine `MAJORITY_DISAGREE` rounds before reaching
-agreement — informative about the new equivalence tolerance under real
-conditions, not a bug (no invalid state was ever written by a
+agreement — informative about the equivalence tolerance at the time under
+real conditions, not a bug (no invalid state was ever written by a
 disagreeing round). Two real bugs were also found and fixed in this
 round's own test tooling (not the contract): the `genlayer` CLI had
 silently auto-updated mid-session to a broken release candidate breaking
@@ -257,7 +253,44 @@ success check accepted a `FINALIZED` status without checking the actual
 `result_name`, treating a genuine disagreement as false-success and
 causing 3 duplicate cases before being caught. Both cases from this
 round needed the same Postgres backfill as prior rounds
-(`backend/src/db/backfill_e2e_test_cases_v5.ts`).
+(`backend/src/db/backfill_e2e_test_cases_v5.ts`). Retired in favor of v6
+after a re-audit found v5's evidence-findings equivalence tolerance
+(one mismatch allowed above 2 evidence items) could let a genuinely
+decisive disagreement pass as consensus — v6 carries the fix.
+
+**v6 deployed and wired in (current):**
+`0x41e2bD175ce730ec613e5977a069dC5061A271E2` is the current production
+contract, wired into the Fly.io backend (`VERDICT_CONTRACT_ADDRESS`
+secret), the indexer, and the Vercel frontend
+(`NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS`). Verified against real StudioNet
+state via the `genlayer` CLI before any test transaction, same procedure
+as every prior round. Carries two re-audit hardening fixes over v5:
+`_evidence_findings_agree` now requires **exact** agreement on every
+decisive finding (`SUPPORTS_*`/`CONTRADICTS_*`) with zero tolerance
+regardless of evidence count — the only mismatch ever tolerated is
+between two non-decisive labels (`INSUFFICIENT` vs `IRRELEVANT`) — and
+every `claim_findings[].evidence_ids` citation is now validated against
+the case's real on-chain evidence set, rejecting a fabricated or
+out-of-case id as malformed output.
+
+Every non-admin read and write method was exercised across 2 more
+independent, fully-detailed product-dispute test cases — full write-up in
+`docs/SECURITY.md` "v6 contract: 2-test round". The first verdict came
+back a well-reasoned `INCONCLUSIVE` at 73% confidence given only
+uncorroborated text-statement evidence, and the appeal's `resolve_appeal`
+needed real retries under the now-stricter equivalence rule (multiple
+genuine `MAJORITY_DISAGREE` rounds) before settling — exactly the
+validator behavior expected from tightening zero-tolerance on decisive
+findings, confirmed live rather than assumed. A separate real bug was
+found and fixed: the frontend's escrow display derives "Locked"/"Pending"
+from a `case_participants.stakeLockedAt` Postgres column that every prior
+backfill script left null, showing "Pending" and "0 GEN in escrow" on
+fully settled cases despite stakes genuinely being locked and paid out
+on-chain — fixed by deriving the real lock timestamps from the contract's
+own `CASE_CREATED`/`RESPONDENT_FUNDED` event log
+(`backend/src/db/fix_backfilled_stake_locks.ts`, and
+`backend/src/db/backfill_e2e_test_cases_v6.ts` going forward). Both cases
+from this round needed the same Postgres backfill as prior rounds.
 
 ### SDK version note
 
