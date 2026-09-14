@@ -1,11 +1,12 @@
 # VERDICT — Security Review
 
 Status: **live on StudioNet, actively tested** — currently deployed as
-v6 (`0x41e2bD175ce730ec613e5977a069dC5061A271E2`; see "v6 contract:
-2-test round" below), through four full contract redeployments and
-four rounds of real end-to-end lifecycle testing so far (see "Live
+v7 (`0xe232251B11bbbf13C848d739914178F27D9F4a56`; see "v7 contract:
+2-test round" below), through five full contract redeployments and
+five rounds of real end-to-end lifecycle testing so far (see "Live
 end-to-end lifecycle audit", "Multi-product live lifecycle audit", "v5
-contract: 2-test round", and "v6 contract: 2-test round"). This document
+contract: 2-test round", "v6 contract: 2-test round", and "v7 contract:
+2-test round"). This document
 is a running record, updated after each audit round and each live testing
 round — not a one-time pre-deployment snapshot. It is still not a
 substitute for a professional external audit before handling real
@@ -928,6 +929,99 @@ lock timestamps.
 Both cases from this round needed the same on-chain-only-case Postgres
 backfill as every prior round, now a fully expected step, not a
 rediscovered surprise.
+
+## v7 contract: 2-test round (2026-09-14)
+
+Redeployed the same day as the second re-audit fixes above (treasury
+double-payment, abandonment deadline) to `0xe232251B11bbbf13C848d739914178F27D9F4a56`.
+Requested explicitly: clear the database of prior claims, run 2 more
+entirely different product tests with real detailed data covering every
+non-admin read/write method, with zero errors on the explorer.
+
+### Two tests
+
+1. **SaaS integration milestone-payment dispute** (case 0) — a
+   contractor suing for a withheld milestone invoice after the
+   respondent claimed the delivered integration was defective.
+   Exercised `create_case`, `fund_respondent_stake`, `submit_evidence`
+   (×4, both sides, across the initial round and the appeal),
+   `close_evidence_window_early`, `request_investigation`,
+   `render_verdict`, `file_appeal`, `open_appeal_evidence_window`,
+   `resolve_appeal`, `settle_case` — 10 of 12 non-admin write methods.
+   - **First verdict**: `PARTIAL` (75% claimant share) at 68%
+     confidence. The claimant's QA sign-off and 11 days of
+     zero-incident production use were weighed against the
+     respondent's own internal email describing a partial-refund
+     defect — genuinely inconclusive on the narrow disputed sub-issue,
+     resolved with a partial award rather than an all-or-nothing call.
+   - **Appeal**: the respondent submitted a bug-tracker ticket and a
+     documented ledger mismatch — new, specific evidence directly
+     addressing the first verdict's stated evidentiary gap. The second,
+     final verdict shifted to 60% claimant share at 62% confidence,
+     correctly weighing the more concrete defect evidence without
+     discarding the substantial delivery evidence from round one.
+   - **Settled** — real GEN payout confirmed via `get_case`.
+2. **Freelance logo design commission** (case 4) — exercised
+   `create_case`, `add_case_rule`, and `cancel_case`: claimant withdrew
+   after a private refund, before the respondent ever funded. Covers
+   the one non-admin write method case 0's full lifecycle doesn't reach.
+
+Together, every non-admin write method is covered except
+`claim_case_abandonment` (needs a real 14-day stall, out of scope for a
+live round, same as every prior round); admin/owner-only methods were
+out of scope. Every non-admin view method (`get_case`,
+`get_case_count`, `get_case_evidence_ids`, `get_evidence`,
+`get_case_rules`, `get_constitution`,
+`get_current_constitution_version`, `get_case_events`,
+`get_protocol_config`, `get_metrics`) was also called and read back
+correctly.
+
+### A real bug in the test harness, caught before it produced any bad state
+
+The verification script's `write()` helper checked
+`receipt.statusName === "FINALIZED"` to decide whether a call succeeded
+— but `genlayer-js`'s `waitForTransactionReceipt` defaults to
+`status: "ACCEPTED"` and returns as soon as consensus is decided, well
+before true finality, and its receipt at that point carries only
+numeric `status`/`result` fields, not the named ones the check assumed.
+Every real write was actually succeeding (`ACCEPTED`, `MAJORITY_AGREE`,
+leader `execution_result: SUCCESS`), but the harness misread the
+numeric status code (`5`) as a failure and retried `create_case` three
+extra times, producing three duplicate, fully valid on-chain cases.
+Root-caused by fetching one of the "failed" transactions' receipts
+directly with `status: "FINALIZED"` explicitly requested and inspecting
+the raw fields — confirmed genuine success, not a revert. Fixed the
+harness to request `status: "FINALIZED"` explicitly and to classify
+outcomes by name using the same numeric maps `genlayer-js` uses
+internally, plus an explicit check on `leader_receipt[0].execution_result`
+so a genuine on-chain revert is never mistaken for a retryable
+disagreement. The three duplicate cases were cleanly retired via
+`cancel_case` (still valid pre-funding, full refund) before the round
+continued — confirmed via `get_case_count` and per-case reads that the
+final on-chain state matched exactly what the round intended, with zero
+reverted transactions across the entire round.
+
+A second, smaller ordering bug surfaced the same way: `add_case_rule`
+is only valid before the evidence window opens
+(DRAFT/OPEN/AWAITING_RESPONDENT_STAKE/FUNDED — see 5.6 above), but the
+harness called it after `fund_respondent_stake`, which transitions
+straight to `EVIDENCE_WINDOW` with no intermediate step. That call
+reverted for real (`gl.vm.UserError`, correctly enforced, not a bug) —
+caught immediately by the new revert check rather than silently
+retried. Fixed by moving `add_case_rule` before funding for future
+cases, and — since case 0 was already funded by the time this was
+caught — exercising the method on case 4 instead so coverage was
+preserved without touching case 0's now-immutable state.
+
+Both cases were backfilled into Postgres the same way as every prior
+round (on-chain-only cases bypass the app's normal creation flow), this
+time via a hand-written SQL script run through `fly postgres connect`
+rather than `flyctl ssh console --command`, since shell access to the
+backend app was unavailable in this environment — every value was
+still pulled live from the chain, matching `backend/src/db/backfill_e2e_test_cases_v7.ts`'s
+logic exactly, with no placeholders. See `review.md` for the full
+write-up of this round, including the exact fix applied to
+`two_product_test_round.mjs`.
 
 ## Known gaps / follow-up before real-value production use
 

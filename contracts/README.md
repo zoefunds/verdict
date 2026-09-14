@@ -111,7 +111,7 @@ re-audit found the equivalence tolerance above (one mismatch allowed
 above 2 evidence items) could let a genuinely decisive disagreement pass
 as consensus — v6 carries the fix.
 
-**v6 (current)** — `0x41e2bD175ce730ec613e5977a069dC5061A271E2`. Deployed
+**v6** — `0x41e2bD175ce730ec613e5977a069dC5061A271E2`. Deployed
 to pick up two re-audit hardening fixes over v5 (see section 5.7 below
 for the full detail): `_evidence_findings_agree` now requires **exact**
 agreement on every decisive finding, zero tolerance regardless of
@@ -138,6 +138,40 @@ round, outside the contract: the frontend's escrow display derives
 left null, showing "Pending"/"0 GEN" on fully settled cases — fixed by
 deriving real lock timestamps from the contract's own
 `CASE_CREATED`/`RESPONDENT_FUNDED` event log instead.
+
+**v7 (current)** — `0xe232251B11bbbf13C848d739914178F27D9F4a56`. Deployed
+to pick up the second re-audit's fund-safety fixes (see "Second re-audit:
+treasury double-payment, abandonment deadline, missing source file" in
+`docs/SECURITY.md`): `settle_case`'s protocol fee and `resolve_appeal`'s
+forfeited appeal bond no longer double-credit `accrued_treasury_wei` on
+top of their direct `_send_gen` transfer (previously let `sweep_treasury`
+pay the same funds out a second time), and `file_appeal` now resets
+`evidence_deadline` so the abandonment grace period is measured from the
+appeal's filing time, not a stale pre-verdict deadline. No method
+signature changes from v6.
+
+Requested explicitly: clear the database of prior claims, run 2 more
+entirely different product tests with real detailed data covering every
+non-admin method, with zero errors on the explorer. Two live product
+tests: **Case 0** — a SaaS integration milestone-payment dispute run
+through the full lifecycle (`create_case`, `fund_respondent_stake`,
+`submit_evidence` ×4, `close_evidence_window_early`,
+`request_investigation`, `render_verdict`, `file_appeal`,
+`open_appeal_evidence_window`, `resolve_appeal`, `settle_case`) —
+first verdict `PARTIAL` (75% claimant) at 68% confidence, appeal
+introduced a bug-tracker record that shifted the second, final verdict
+to 60% claimant; settled with a real GEN payout. **Case 4** — a
+freelance logo design commission where the claimant cancels before the
+respondent ever funds (`add_case_rule`, `cancel_case`), covering the one
+non-admin write method Case 0's lifecycle doesn't reach. Together every
+non-admin write method is covered except `claim_case_abandonment`
+(needs a real 14-day stall, out of scope for a live round, same as every
+prior round). Three duplicate `create_case` calls were created and
+cleanly retired via `cancel_case` mid-round after a status-parsing bug
+in the test harness (fixed: `genlayer-js`'s `waitForTransactionReceipt`
+must be given `status: "FINALIZED"` explicitly, or it returns at the
+earlier `ACCEPTED` state) — no reverted transactions occurred at any
+point. See `review.md` for the full write-up.
 
 ## Contents
 

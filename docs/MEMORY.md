@@ -1175,3 +1175,82 @@ new test file, confirmed exactly the 4 tests targeting the two contract
 findings failed (and only those 4), then restored the fix. Cheap to do,
 and the only way to be sure a "regression test" isn't secretly a
 tautology that would pass against either version of the code.
+
+## v7 redeploy: DB wipe + 2-test round on a fresh contract (2026-09-14)
+
+User supplied a freshly-deployed contract address
+(`0xe232251B11bbbf13C848d739914178F27D9F4a56`, carrying the treasury/
+abandonment fixes above) and asked for the database to be cleared and
+every non-admin method exercised across 2 real product tests, with zero
+errors on the explorer. No funded wallets or DB credentials were
+available in this environment at the start — resolved by creating two
+fresh `genlayer account create`d local keystores (user funded them with
+real StudioNet GEN), wiring the new address into both Fly (backend
+secret) and Vercel (frontend env) production, and clearing Postgres via
+the project's own documented `backend/src/db/clear_all_cases.ts` path
+(adapted to run through `fly postgres connect` piped SQL, since
+`flyctl ssh console` was unavailable as a sandboxed action here —
+`fly postgres connect` itself worked fine for both the raw clear and the
+later backfill).
+
+**The real bug this round found was in the verification harness, not
+the contract**: `scripts/verification/lifecycle_demo.mjs`'s `write()`
+helper (reused verbatim as the base for the new
+`two_product_test_round.mjs`) checked `receipt.statusName === "FINALIZED"`,
+but `genlayer-js`'s `waitForTransactionReceipt` defaults to
+`status: "ACCEPTED"` and returns there — well before real finality —
+with a receipt that only carries numeric `status`/`result` fields at
+that point, not the named ones the check silently assumed existed. The
+first `create_case` call actually succeeded (`ACCEPTED`,
+`MAJORITY_AGREE`, leader execution `SUCCESS`) but read back as
+`statusName=5` (the fallback to the raw numeric field), which the
+check didn't recognize as success — so it retried 3 more times,
+creating 3 duplicate, fully valid on-chain cases before I noticed.
+Confirmed the real cause by fetching one of the "failed" tx hashes
+directly with `status: "FINALIZED"` explicitly requested and reading
+the raw receipt — genuine success, not a revert, every time. This is
+the same species of mistake `docs/SECURITY.md`'s v5 round already
+warned about ("checking status alone... caused 3 duplicate cases") —
+had that lesson been re-derived from the doc instead of re-discovered
+the hard way, it would have been caught before spending 3 extra live
+transactions. Fixed by requesting `status: "FINALIZED"` explicitly and
+classifying results by name via the same numeric maps `genlayer-js`
+uses internally, plus a hard check on
+`leader_receipt[0].execution_result` so a genuine revert can never be
+mistaken for a retryable disagreement again. The 3 duplicates were
+cleanly retired with `cancel_case` (still pre-funding, full refund) —
+confirmed via `get_case_count` before continuing.
+
+A second, smaller bug from the same root cause (not verifying against
+the actual contract source before scripting): `add_case_rule` is only
+valid before the evidence window opens, but the harness called it after
+`fund_respondent_stake` (which jumps straight to `EVIDENCE_WINDOW`).
+That reverted for real — correctly enforced by the contract, not a
+bug — and was caught immediately by the new revert check instead of
+silently retried. Since case 0 was already funded by the time this was
+caught, fixed by moving the call earlier for future runs and exercising
+it on case 4 instead, so method coverage was preserved without
+mutating case 0's already-advanced state.
+
+Backfilling Postgres for both cases needed the same on-chain-only-case
+treatment as every prior round, but this time without shell access to
+run the checked-in TypeScript backfill script — write a raw SQL script
+by hand instead, piped through `fly postgres connect`, mirroring the
+TS script's exact logic (same field derivations, same real
+`CASE_CREATED`/`RESPONDENT_FUNDED` event-log timestamps for
+`stakeLockedAt`). One new thing learned the hard way: Postgres enum
+columns (`participant_role`, `case_status`, `evidence_type`, etc.)
+reject a plain string literal inside a `UNION ALL` across two `INSERT
+... SELECT` branches unless explicitly cast (`'claimant'::participant_role`)
+— the whole multi-statement script ran inside one `BEGIN`/`COMMIT`
+block specifically so a mid-script type error would roll back cleanly
+instead of leaving a half-backfilled case, which is exactly what
+happened on the first attempt.
+
+Also discovered mid-round: 3 separate `constitutions` parent rows each
+have their own version marked `is_current = true` (the uniqueness is
+scoped per-constitution, not global) — the backfill query
+(`WHERE is_current = true LIMIT 1`, with no `ORDER BY`) picks whichever
+Postgres returns first, arbitrarily. This ambiguity already existed
+identically in every prior round's backfill script; not a new bug
+introduced here, just newly noticed.

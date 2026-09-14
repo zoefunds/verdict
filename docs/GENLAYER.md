@@ -259,7 +259,7 @@ after a re-audit found v5's evidence-findings equivalence tolerance
 decisive disagreement pass as consensus — v6 carries the fix.
 
 **v6 deployed and wired in (current):**
-`0x41e2bD175ce730ec613e5977a069dC5061A271E2` is the current production
+`0xe232251B11bbbf13C848d739914178F27D9F4a56` is the current production
 contract, wired into the Fly.io backend (`VERDICT_CONTRACT_ADDRESS`
 secret), the indexer, and the Vercel frontend
 (`NEXT_PUBLIC_VERDICT_CONTRACT_ADDRESS`). Verified against real StudioNet

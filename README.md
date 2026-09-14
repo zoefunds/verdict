@@ -25,7 +25,7 @@ DISAGREEMENT -> RULES -> COLLATERAL -> EVIDENCE -> GENLAYER INVESTIGATION -> VER
 |---|---|---|
 | Frontend | [ver-dict.vercel.app](https://ver-dict.vercel.app) | Live |
 | Backend API | `verdict-backend.fly.dev` | Live, always-on (Fly.io) |
-| Contract | `0x41e2bD175ce730ec613e5977a069dC5061A271E2` (StudioNet) | Live — "v6" |
+| Contract | `0xe232251B11bbbf13C848d739914178F27D9F4a56` (StudioNet) | Live — "v7" |
 
 The contract has gone through several deployments as external audits found
 and fixed real issues (hash-truncation canonicalization, DNS-rebinding SSRF,
@@ -359,14 +359,14 @@ or the deployment.
 
 ## For reviewers
 
-- **Deployed contract**: `0x41e2bD175ce730ec613e5977a069dC5061A271E2` on
+- **Deployed contract**: `0xe232251B11bbbf13C848d739914178F27D9F4a56` on
   GenLayer StudioNet (chain id `61999`, RPC `https://studio.genlayer.com/api`).
   This is the ONLY contract in this system — there is no second contract,
   no off-chain adjudication service, and no path by which the backend can
   independently decide a verdict (see "Why this cannot fairly be
   centralized" in `docs/GENLAYER.md`).
 - **Verify the deployed source matches this repo**: `genlayer schema
-  0x41e2bD175ce730ec613e5977a069dC5061A271E2` returns every method's exact
+  0xe232251B11bbbf13C848d739914178F27D9F4a56` returns every method's exact
   parameter list; diff it against `contracts/verdict_contract.py`'s public
   methods. This exact check is what caught a real stale-deployment
   mismatch earlier in this project (see `docs/SECURITY.md`) — it isn't a
