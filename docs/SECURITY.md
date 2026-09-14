@@ -749,6 +749,80 @@ no matching Postgres rows and needed the same backfill step as before
 (`backend/src/db/backfill_e2e_test_cases_v5.ts`) — confirmed, not a
 surprise, per the standing note added after the v4 round.
 
+## Second re-audit: treasury double-payment, abandonment deadline, missing source file (2026-09-14)
+
+Four precise, specific findings from a team review, all real, all fixed —
+not vague "harden this" feedback, exact mechanisms named:
+
+1. **Treasury double-payment** — `settle_case`'s protocol-fee path and
+   `resolve_appeal`'s forfeited-bond path both `_send_gen` the fee/bond
+   directly to `treasury_address` at settlement time, but ALSO credited
+   the same amount to `accrued_treasury_wei` — which `sweep_treasury`
+   (owner-gated) could later pay out a SECOND time from the same balance.
+   Not a display bug: real GEN could leave the contract twice for the
+   same fee or forfeited bond. Fixed by removing the erroneous
+   `accrued_treasury_wei` credit from both direct-push paths —
+   `accrued_treasury_wei` now only exists as a safety valve for a future
+   credit-only path that doesn't also push immediately; under normal
+   operation it stays at `0`, exactly as it should given every current
+   credit path already pushes directly. `sweep_treasury`'s docstring
+   updated to state this precisely instead of implying it "covers
+   residual bookkeeping" that, as coded, never legitimately existed.
+2. **Appeal abandonment deadline immediately claimable** — `file_appeal`
+   never updated `case.evidence_deadline` when moving a case to
+   `APPEALED`, so `claim_case_abandonment`'s grace-period check kept
+   measuring time since the ORIGINAL pre-verdict evidence window — a
+   deadline from earlier in the case's life that's often already well
+   past its 14-day grace period by the time an appeal is even filed
+   (a case must pass through investigation, a verdict, and up to 7 more
+   days of appeal window first). That made abandonment immediately
+   claimable against a freshly-filed appeal nobody had abandoned yet.
+   Fixed by resetting `evidence_deadline` to the appeal-filing timestamp
+   in `file_appeal`, so the grace-period clock correctly starts counting
+   from when the appeal was filed.
+3. **Missing backend storage module** — `.gitignore` had a bare `storage/`
+   pattern (no leading slash, no path prefix) that was meant to ignore
+   only the runtime evidence-uploads directory
+   (`backend/storage/uploads/`, already separately and correctly covered)
+   but, matching ANY directory named `storage` anywhere in the tree, was
+   ALSO silently ignoring `backend/src/storage/files.ts` — a real,
+   necessary source file `routes/evidence.ts` imports. It existed locally
+   but was never committed; a fresh clone's backend would fail to build.
+   Fixed by removing the redundant overly-broad pattern and committing
+   the file.
+4. **Checked-in test config didn't actually run standalone** —
+   `backend/vitest.config.ts` (added earlier to make `npm test` pass)
+   only stubbed `DATABASE_URL`, but `lib/env.ts`'s schema also requires
+   `JWT_SECRET` and `SESSION_REFRESH_SECRET` (each ≥16 chars, no
+   default) — on a genuinely fresh checkout or in CI (which sets none of
+   these), `npm test` crashed with `process.exit(1)` from inside `env.ts`
+   for any test file that transitively imports it. Confirmed by actually
+   removing `backend/.env` and running `npm test` before and after the
+   fix, not assumed. Fixed by stubbing all three required values.
+5. **Case linkage didn't verify identifying contract fields** — `PATCH
+   /cases/:id/link-contract` trusted whatever `contractCaseId` the client
+   claimed with zero on-chain verification, the same class of gap
+   evidence linking had before an earlier audit round fixed it (see
+   "External audit findings" above). Fixed the same way: added
+   `verifyCaseLinkage` (exported, unit-tested in isolation), which reads
+   the claimed case back from the contract and cross-checks claimant
+   wallet, respondent address, and required stake amount before
+   persisting the link — a mismatch on any field returns 422 with the
+   specific field(s) that failed, and nothing is persisted.
+
+**Verification**: 7 new contract-level tests
+(`tests/contract/test_verdict_contract_paths.py`) instantiate the real
+`Verdict` class (not just its pure module-level functions, unlike
+`test_verdict_parsing.py`) against an extended `genlayer_stub.py` capable
+of real storage and message-context simulation, and actually call
+`settle_case`/`resolve_appeal`/`file_appeal`/`claim_case_abandonment` —
+confirmed to genuinely catch the treasury and deadline bugs by reverting
+the contract fix and re-running them before restoring it (4 of 7 failed
+against the pre-fix code, exactly the ones targeting these two findings).
+6 new backend tests (`backend/src/routes/cases.test.ts`) cover
+`verifyCaseLinkage` directly. 49 contract tests total, 26 backend tests
+total, both suites green; `genvm-lint` clean.
+
 ## v6 contract: 2-test round (2026-09-13)
 
 A re-audit of the v5 round found the `_evidence_findings_agree` tolerance

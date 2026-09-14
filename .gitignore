@@ -33,9 +33,14 @@ backend/build/
 pgdata/
 *.sqlite
 
-# Evidence storage volume (never commit user-uploaded evidence)
+# Evidence storage volume (never commit user-uploaded evidence). AUDIT
+# FIX (re-audit, 2026-09-14): the old bare `storage/` pattern below (no
+# leading slash) matched ANY directory named "storage" anywhere in the
+# tree, not just this one — it was silently also ignoring
+# backend/src/storage/, a real source directory (files.ts), which meant
+# that file was never committed at all. Removed the overly-broad
+# duplicate; this specific path already covers the real target.
 backend/storage/uploads/
-storage/
 
 # Logs
 *.log

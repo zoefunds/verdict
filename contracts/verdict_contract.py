@@ -1734,9 +1734,17 @@ Respond with ONLY a JSON object, no markdown, with exactly these keys:
         case.respondent_stake_wei = u256(0)
         case.settled = True
         case.status = STATUS_SETTLED
+        # `treasury_credit_wei` is a per-case AUDIT RECORD only — never a
+        # claimable balance. AUDIT FIX (re-audit, 2026-09-14): this used to
+        # ALSO add treasury_fee to accrued_treasury_wei right here, even
+        # though the fee is sent directly to treasury_address a few lines
+        # below in this same call. That let sweep_treasury later pay the
+        # SAME fee out a second time from accrued_treasury_wei — a real
+        # double-payment, not a display bug. accrued_treasury_wei must
+        # only ever be credited by a path that does NOT also immediately
+        # `_send_gen` the same amount; this path does, so it must not
+        # touch accrued_treasury_wei at all.
         case.treasury_credit_wei = u256(treasury_fee)
-        if treasury_fee > 0:
-            self.accrued_treasury_wei = u256(int(self.accrued_treasury_wei) + treasury_fee)
         self.total_cases_settled = u64(int(self.total_cases_settled) + 1)
         self._log(case_id, "SETTLED", case.claimant, claimant_payout, now_ts, outcome)
 
@@ -1781,6 +1789,24 @@ Respond with ONLY a JSON object, no markdown, with exactly these keys:
         case.appellant = sender
         case.appeal_new_evidence_note = _truncate(new_evidence_note.strip(), MAX_EVIDENCE_DESCRIPTION_LEN)
         case.status = STATUS_APPEALED
+        # AUDIT FIX (re-audit, 2026-09-14): `evidence_deadline` still held
+        # the ORIGINAL pre-verdict evidence-window deadline at this point —
+        # `open_appeal_evidence_window` is the only place that normally
+        # advances it, and that hasn't been called yet. `claim_case_
+        # abandonment`'s APPEALED/RE_INVESTIGATION branch checks `now_ts >
+        # evidence_deadline + ABANDONMENT_GRACE_SECONDS` to detect a
+        # stalled appeal — left unset here, that check was measuring time
+        # since the ORIGINAL evidence window instead of since the appeal
+        # was filed. Since a case must already pass through
+        # UNDER_INVESTIGATION -> VERDICT_RENDERED -> APPEAL_WINDOW (up to
+        # 7 more days) before file_appeal can even be called, the original
+        # evidence_deadline plus the grace period could already be in the
+        # past the instant the appeal is filed, making abandonment
+        # immediately claimable against a freshly-filed appeal. Resetting
+        # it to `now_ts` here makes the grace-period clock correctly start
+        # counting from the moment the appeal was filed, not from the
+        # unrelated original evidence window.
+        case.evidence_deadline = u64(now_ts)
         self.total_appeals = u64(int(self.total_appeals) + 1)
 
         self._log(case_id, "APPEAL_FILED", sender, attached, now_ts, case.appeal_new_evidence_note[:100])
@@ -1866,8 +1892,13 @@ Respond with ONLY a JSON object, no markdown, with exactly these keys:
             _send_gen(appellant, bond)
         else:
             # --- zero ledger, persist, THEN transfer ---
+            # AUDIT FIX (re-audit, 2026-09-14): same double-payment bug as
+            # settle_case's treasury_fee path — this forfeited bond is sent
+            # directly to treasury_address below, so it must NOT also be
+            # added to accrued_treasury_wei, or sweep_treasury could pay it
+            # out a second time later. See that comment for the full
+            # reasoning.
             case.appeal_bond_wei = u256(0)
-            self.accrued_treasury_wei = u256(int(self.accrued_treasury_wei) + int(bond))
             _send_gen(self.treasury_address, bond)
 
     # ------------------------------------------------------------------
@@ -1979,12 +2010,18 @@ Respond with ONLY a JSON object, no markdown, with exactly these keys:
 
     @gl.public.write
     def sweep_treasury(self, amount_wei: int) -> None:
-        """Owner-gated withdrawal of accrued treasury funds (losing stakes,
-        forfeited appeal bonds, protocol fees) to the configured treasury
-        address. Kept as an explicit pull rather than pushing on every
-        settlement to a possibly-misconfigured address, though settlement
-        already pushes directly to treasury_address for the primary flows —
-        this covers any residual `accrued_treasury_wei` bookkeeping."""
+        """Owner-gated withdrawal of `accrued_treasury_wei`. AUDIT FIX
+        (re-audit, 2026-09-14): `settle_case`'s protocol-fee path and
+        `resolve_appeal`'s forfeited-bond path both push directly to
+        `treasury_address` via `_send_gen` at the moment funds are
+        released — neither one credits `accrued_treasury_wei` anymore,
+        specifically so this method can never pay out an amount that was
+        already sent. `accrued_treasury_wei` currently has no path that
+        credits it without also immediately transferring the same amount,
+        so it is expected to read `0` under normal operation; this method
+        exists as a safety valve for any future credit-only path, not as
+        a second withdrawal route for funds the direct-push paths already
+        moved."""
         self._only_owner()
         _require(amount_wei > 0, "no funds to release")
         available = int(self.accrued_treasury_wei)

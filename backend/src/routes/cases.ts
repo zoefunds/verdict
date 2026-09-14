@@ -15,6 +15,39 @@ import { db } from "../db/client.js";
 import { cases, caseParticipants, constitutionVersions, users, notifications } from "../db/schema.js";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { getAddress, isAddress } from "viem";
+import { getCase as getOnChainCase, isContractConfigured } from "../lib/genlayer-client.js";
+
+/**
+ * Cross-checks a claimed on-chain case against the identifying fields of
+ * the DB row it's being linked to. Module-level (not nested in the route
+ * plugin) so it's directly unit-testable, same pattern as
+ * evidence.ts's `toContractKind`.
+ *
+ * AUDIT FIX (re-audit, 2026-09-14): PATCH /cases/:id/link-contract
+ * previously trusted whatever `contractCaseId` the client claimed with no
+ * verification against the contract at all — the same class of gap
+ * evidence linking had before it was fixed (see
+ * PATCH /evidence/:id/link-contract). Any authenticated case creator
+ * could bind an unrelated real on-chain case (their own, or anyone's) to
+ * their DB row, and the UI would display a misleading "on-chain" status
+ * for a case that doesn't actually match.
+ */
+export function verifyCaseLinkage(
+  onChain: Record<string, unknown>,
+  expected: { claimantWallet?: string; respondentAddress: string; stakeAmountWei: string },
+): string[] {
+  const mismatches: string[] = [];
+  if (expected.claimantWallet && String(onChain.claimant).toLowerCase() !== expected.claimantWallet.toLowerCase()) {
+    mismatches.push(`claimant: on-chain=${onChain.claimant}, expected=${expected.claimantWallet}`);
+  }
+  if (String(onChain.respondent).toLowerCase() !== expected.respondentAddress.toLowerCase()) {
+    mismatches.push(`respondent: on-chain=${onChain.respondent}, expected=${expected.respondentAddress}`);
+  }
+  if (String(onChain.required_stake_wei) !== expected.stakeAmountWei) {
+    mismatches.push(`required_stake_wei: on-chain=${onChain.required_stake_wei}, expected=${expected.stakeAmountWei}`);
+  }
+  return mismatches;
+}
 
 const CreateCaseBody = z.object({
   title: z.string().min(8).max(200),
@@ -120,7 +153,7 @@ export const caseRoutes: FastifyPluginAsync = async (app) => {
   app.patch("/cases/:id/link-contract", { onRequest: [app.authenticate] }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const body = LinkContractBody.parse(req.body);
-    const { sub: userId } = req.user as { sub: string };
+    const { sub: userId, walletAddress } = req.user as { sub: string; walletAddress?: string };
 
     const [existing] = await db.select().from(cases).where(eq(cases.id, id)).limit(1);
     if (!existing) return reply.code(404).send({ error: "Case not found" });
@@ -129,6 +162,34 @@ export const caseRoutes: FastifyPluginAsync = async (app) => {
     }
     if (existing.status !== "draft") {
       return reply.code(409).send({ error: "Case is not in draft state" });
+    }
+    if (!existing.respondentAddress) {
+      return reply.code(409).send({ error: "This case has no respondent address on record — cannot verify linkage" });
+    }
+
+    if (!isContractConfigured()) {
+      return reply.code(503).send({ error: "Contract not configured — cannot verify case linkage" });
+    }
+
+    let onChain: Record<string, unknown>;
+    try {
+      onChain = await getOnChainCase(Number(body.contractCaseId));
+    } catch (err) {
+      req.log.warn({ err }, "on-chain case read failed during link-contract verification");
+      return reply.code(502).send({ error: "Could not read this case id from the contract to verify it" });
+    }
+
+    const mismatches = verifyCaseLinkage(onChain, {
+      claimantWallet: walletAddress,
+      respondentAddress: existing.respondentAddress,
+      stakeAmountWei: existing.stakeAmountWei,
+    });
+    if (mismatches.length > 0) {
+      req.log.warn({ mismatches, caseId: id, claimedContractCaseId: body.contractCaseId }, "case link-contract verification failed");
+      return reply.code(422).send({
+        error: "The claimed on-chain case id does not match this record — not linked.",
+        details: mismatches,
+      });
     }
 
     const evidenceWindowClosesAt = new Date(Date.now() + existing.evidenceWindowHours * 60 * 60 * 1000);

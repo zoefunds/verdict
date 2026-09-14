@@ -1097,3 +1097,81 @@ of, at the user's explicit request: updated README.md, contracts/README.md,
 docs/DEPLOYMENT.md, docs/GENLAYER.md, docs/SECURITY.md, and
 tests/contract/README.md — all six still referenced the retired v5
 address as current.
+
+## Second team review: treasury double-payment, abandonment deadline, missing source file (2026-09-14)
+
+Five precise findings, all real, worth remembering how each was actually
+found rather than just that it was fixed:
+
+- **Treasury double-payment was found by literally re-reading `settle_case`
+  and `resolve_appeal` side by side** — both call `_send_gen(treasury,
+  amount)` directly AND `self.accrued_treasury_wei += amount` a few lines
+  apart, and `sweep_treasury` pays out from `accrued_treasury_wei`. Three
+  separate real transfer paths converging on the same GEN. Grepping for
+  every `accrued_treasury_wei` write site (only 2, both wrong) confirmed
+  there was no OTHER legitimate credit source — `accrued_treasury_wei`
+  was doing nothing but duplicating money that had already left the
+  contract. Fixed by deleting exactly the two erroneous credit lines,
+  nothing else — the narrowest possible fix, not a redesign.
+- **The abandonment deadline bug required tracing the actual timeline**,
+  not just reading one function in isolation: `claim_case_abandonment`'s
+  APPEALED branch checks `evidence_deadline + grace`, but `evidence_deadline`
+  is set by `open_appeal_evidence_window`, which hasn't been called yet
+  at the point `file_appeal` succeeds — so during APPEALED specifically,
+  that field is still whatever it was from the ORIGINAL evidence window,
+  several lifecycle stages earlier. Confirmed this was exploitable in
+  realistic timelines (not just a theoretical edge case) by working out
+  that a case must pass through investigation + a rendered verdict + up
+  to 7 more days of appeal window before file_appeal can even be called
+  — plenty of time for the original deadline + 14-day grace to already
+  be behind. Fixed with a one-line reset in file_appeal.
+- **The missing storage module was a `git check-ignore -v` away** — once
+  told "a backend storage module is missing," ran that against the
+  actual import path from evidence.ts and got an immediate, unambiguous
+  answer: a bare `storage/` gitignore pattern (meant for the runtime
+  uploads directory, already separately covered by a more specific line)
+  was ALSO silently swallowing the real source directory. Removed the
+  redundant broad pattern; kept the specific one.
+- **The vitest config bug was caught by actually removing `backend/.env`
+  and running `npm test`**, not by reading the config and assuming it
+  was fine — it wasn't: `env.ts` requires JWT_SECRET and
+  SESSION_REFRESH_SECRET too, and the checked-in vitest.config.ts only
+  stubbed DATABASE_URL, so CI (which sets none of these) has been
+  running `npm test` red since that config was added. This is worth
+  remembering as a general lesson: "I added a test config" doesn't mean
+  "the test config works standalone" — always verify by actually
+  simulating the environment it needs to work in (CI, a fresh clone),
+  not just running it in a shell that already has a real .env sitting
+  there from earlier work.
+- **Case linkage verification mirrored the exact pattern already proven
+  for evidence linking** earlier this project — same shape of bug
+  (trusting a claimed on-chain id with zero verification), same fix
+  (read it back from the contract, cross-check identifying fields,
+  reject on any mismatch with the specific field named). Recognizing
+  "this is the same bug class I already fixed once" made this the
+  fastest of the five to actually implement correctly.
+
+**Real infrastructure work needed to make the contract-level fixes
+testable at all**: the existing `genlayer_stub.py` only supported pure
+module-level functions, not instantiating the real `Verdict` class,
+because its `Contract` base didn't auto-initialize `TreeMap`/`DynArray`-
+annotated storage fields the way real GenVM does. Extended it with a
+`__new__` that walks class annotations and pre-populates them — hit one
+genuinely subtle bug while building this: `TreeMap[int, X]` doesn't
+evaluate to the bare `TreeMap` class even though the stub's own
+`_Subscriptable.__class_getitem__` says it should, because `TreeMap`
+lists `dict` FIRST in its base classes, and `dict`'s built-in PEP 585
+`__class_getitem__` (inherited via MRO) shadows the stub's override —
+the annotation is a real `types.GenericAlias`, and only its `__origin__`
+equals the bare class. Found by literally printing `Verdict.__annotations__`
+and reading the actual repr rather than assuming the override worked as
+written. This is now reusable infrastructure for any future test that
+needs to exercise a real contract method's storage mutations, not just
+this one audit round's two findings.
+
+**Verified every regression test would actually have caught its bug**,
+not just that it passes now: `git stash`ed the contract fix, reran the
+new test file, confirmed exactly the 4 tests targeting the two contract
+findings failed (and only those 4), then restored the fix. Cheap to do,
+and the only way to be sure a "regression test" isn't secretly a
+tautology that would pass against either version of the code.

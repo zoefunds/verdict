@@ -90,7 +90,32 @@ def install() -> None:
     evm = types.SimpleNamespace(contract_interface=contract_interface)
 
     class Contract:
-        pass
+        """Real GenVM auto-initializes every class-annotated TreeMap/
+        DynArray storage field to an empty container before __init__
+        runs, so a contract's __init__ can immediately assign into them
+        (e.g. `self.cases[cid] = ...`) without first constructing them.
+        This stub's __new__ mimics that minimally — just enough for
+        Verdict's real __init__ to run unmodified in tests that
+        instantiate the actual contract class, not only its pure
+        module-level functions."""
+
+        def __new__(cls, *args, **kwargs):
+            obj = super().__new__(cls)
+            for klass in reversed(cls.__mro__):
+                for name, annotation in getattr(klass, "__annotations__", {}).items():
+                    # TreeMap/DynArray both list `dict`/`list` first in
+                    # their bases, so Python's built-in PEP 585
+                    # `__class_getitem__` (inherited from dict/list)
+                    # shadows _Subscriptable's override — `TreeMap[X, Y]`
+                    # is therefore a real `types.GenericAlias`, not the
+                    # bare class, and its origin (not the alias itself)
+                    # is what needs comparing here.
+                    origin = getattr(annotation, "__origin__", annotation)
+                    if origin is TreeMap:
+                        setattr(obj, name, TreeMap())
+                    elif origin is DynArray:
+                        setattr(obj, name, DynArray())
+            return obj
 
     gl.vm = vm
     gl.message = message

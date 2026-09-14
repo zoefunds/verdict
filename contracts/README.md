@@ -274,16 +274,20 @@ payout mapping: `CLAIMANT`/`RESPONDENT` → full pot to the winner;
 parties refunded their own stake. An optional protocol fee
 (`protocol_fee_bps`, 0 by default, capped at 10%) is skimmed only from the
 losing side's forfeited collateral, never from a winner's own reclaimed
-stake.
+stake, and is sent directly to `treasury_address` at settlement time —
+see "Treasury accounting" below for why it must NOT also touch
+`accrued_treasury_wei`.
 
 ### 5.9 Appeals
 `file_appeal` (payable) — either party, once, within the fixed 7-day
 `APPEAL_WINDOW`, posts an appeal bond (`appeal_bond_bps` of the total case
-stake, exact-match enforced) and a required new-evidence note.
-`open_appeal_evidence_window` briefly reopens evidence submission.
-`resolve_appeal` triggers the second, final, independent re-evaluation; the
-appeal bond is returned to the appellant if the appeal improved their
-position, otherwise it is forfeited to treasury. No further appeals are
+stake, exact-match enforced) and a required new-evidence note. Also resets
+`evidence_deadline` to the filing timestamp — see the abandonment note
+below for why. `open_appeal_evidence_window` briefly reopens evidence
+submission. `resolve_appeal` triggers the second, final, independent
+re-evaluation; the appeal bond is returned to the appellant if the appeal
+improved their position, otherwise it is forfeited to treasury (same
+direct-push rule as the settlement fee above). No further appeals are
 possible after this.
 
 ### 5.10 Abandonment / timeout recovery
@@ -292,8 +296,32 @@ could go silent (respondent never funds; evidence window closes but nobody
 requests investigation or renders a verdict; an appeal is filed but never
 carried through to resolution). Each check is `deadline + a grace period`
 and only ever releases the caller's **own** deposited funds — this is the
-"never permanently stuck" guarantee. `sweep_treasury` (owner-gated) pulls
-any residual accrued treasury balance.
+"never permanently stuck" guarantee. **AUDIT FIX (re-audit, 2026-09-14)**:
+the APPEALED/RE_INVESTIGATION branch's deadline check reuses
+`case.evidence_deadline` — before this fix, `file_appeal` never advanced
+that field when moving a case into `APPEALED`, so the check measured time
+since the case's ORIGINAL pre-verdict evidence window, not since the
+appeal was filed. Since a case must already pass through investigation, a
+rendered verdict, and up to 7 more days of appeal window before
+`file_appeal` can even succeed, that original deadline plus its grace
+period could already be in the past the instant an appeal was filed —
+making abandonment immediately claimable against a freshly-filed appeal.
+`file_appeal` now resets `evidence_deadline` to the filing timestamp, so
+the grace-period clock correctly starts from the appeal, not from an
+unrelated earlier stage.
+
+**Treasury accounting**: `sweep_treasury` (owner-gated) pays out
+`accrued_treasury_wei`. **AUDIT FIX (re-audit, 2026-09-14)**: this field
+used to also get credited by `settle_case`'s fee path and
+`resolve_appeal`'s forfeit path, both of which ALSO push the same amount
+directly to `treasury_address` via `_send_gen` at the moment it's
+released — meaning `sweep_treasury` could pay the exact same fee or bond
+out a second time from the accrued balance. Real double-payment, not a
+bookkeeping display issue. Fixed by removing the credit from both
+direct-push paths; `accrued_treasury_wei` now only exists as a safety
+valve for a hypothetical future credit-only path and reads `0` under
+normal operation, since every current credit path already pushes
+immediately.
 
 ### 5.11 Views
 `get_case`, `get_case_count`, `get_case_evidence_ids`, `get_evidence`,
